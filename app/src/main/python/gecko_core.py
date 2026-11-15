@@ -94,6 +94,20 @@ def detect_grid(rgb, force_cols=None, force_rows=None):
         raise RuntimeError("畫面上已沒有洞（關卡可能已完成）")
     bw = float(np.median([h[1][2] for h in holes]))
     s = bw / 0.51
+    # 用「洞中心落在格線上」微調格子大小（洞多時很準，避免誤差累積）
+    if len(holes) >= 5:
+        pts = np.array([[h[0][0], h[0][1] - 0.10 * 1.0 * s] for h in holes])
+        best = None
+        for sc in np.arange(s * 0.9, s * 1.06, 0.25):
+            err = 0.0
+            for k in (0, 1):
+                ang = 2 * np.pi * pts[:, k] / sc
+                m = np.hypot(np.cos(ang).mean(), np.sin(ang).mean())
+                err += 1 - m
+            if best is None or err < best[0] - 1e-9:
+                best = (err, sc)
+        if abs(best[1] - s) / s > 0.025:    # 差距小就沿用原估計（避免相位跳動）
+            s = float(best[1])
     # 相位：以洞中心對齊 (洞的黑色中心略偏下)
     hx = float(np.median([h[0][0] % s for h in holes]))
     hy = float(np.median([(h[0][1] - 0.10 * s) % s for h in holes]))
@@ -108,16 +122,24 @@ def detect_grid(rgb, force_cols=None, force_rows=None):
     return px + c0 * s, py + r0 * s, s, cols, rows
 
 
-def ring_color(rgb, cx, cy, s):
-    best, bs = None, -1
-    for ang in range(0, 360, 30):
-        x = int(cx + 0.38 * s * np.cos(np.radians(ang)))
-        y = int(cy + 0.38 * s * np.sin(np.radians(ang)))
-        c = med(rgb, x, y, 4)
-        sat = int(c.max()) - int(c.min())
-        if sat > bs and not (abs(c - FLOOR).max() < 12):
-            best, bs = c, sat
-    return best if best is not None else np.array([255, 255, 255])
+def ring_color(rgb, cx, cy, s, frozen=False, ret_n=False):
+    """洞外圈顏色：環形取樣的中位數（排除地板、黑洞心、白字、冰藍）"""
+    pts = []
+    for ang in range(0, 360, 15):
+        for rr in (0.33, 0.38, 0.43):
+            x = int(cx + rr * s * np.cos(np.radians(ang)))
+            y = int(cy + rr * s * np.sin(np.radians(ang)))
+            if not (0 <= y < rgb.shape[0] and 0 <= x < rgb.shape[1]):
+                continue
+            c = med(rgb, x, y, 3).astype(int)
+            if abs(c - FLOOR).max() < 14 or c.max() < 70 and not frozen or c.min() > 225:
+                continue
+            if frozen and (c[2] > c[0] + 60 and c[2] > 170):   # 冰藍
+                continue
+            pts.append(c)
+    if len(pts) < 5:
+        return (np.array([255, 255, 255]), len(pts)) if ret_n else np.array([255, 255, 255])
+    return (np.median(pts, 0), len(pts)) if ret_n else np.median(pts, 0)
 
 
 def read_digit(rgb, cx, cy, s):
@@ -161,6 +183,15 @@ def parse(rgb, force_cols=None, force_rows=None):
         return int(x0 + (c + .5) * s), int(y0 + (r + .5) * s)
 
     b.center = center
+    # 洞 = 近似圓形的深色塊（黑色外框的壁虎是細長的，排除）
+    dk_all = (rgb.max(2) < 60).astype(np.uint8)
+    nn, _l, st_, cen_ = cv2.connectedComponentsWithStats(dk_all)
+    hole_cells = set()
+    for i in range(1, nn):
+        w_, h_, a_ = st_[i, 2], st_[i, 3], st_[i, 4]
+        if 0.40 * s < w_ < 0.66 * s and 0.36 * s < h_ < 0.62 * s and a_ > 0.62 * w_ * h_ and 0.75 < w_ / h_ < 1.4:
+            hc = int((cen_[i][0] - x0) // s); hr = int((cen_[i][1] - 0.10 * s - y0) // s)
+            hole_cells.add((hr, hc))
     for r in range(rows):
         for c in range(cols):
             cx, cy = center(r, c)
@@ -170,7 +201,7 @@ def parse(rgb, force_cols=None, force_rows=None):
             dark_frac = float((patch.max(2) < 60).mean())
             corners = np.median([med(rgb, int(cx + dx * .40 * s), int(cy + dy * .40 * s), 5)
                                  for dx in (-1, 1) for dy in (-1, 1)], 0)
-            if dark_frac > 0.5:
+            if (r, c) in hole_cells:
                 b.cell[(r, c)] = "hole"
                 b.hole[(r, c)] = ring_color(rgb, cx, cy, s)
             elif cdist(corners, VOID) < 8 and cdist(m, VOID) < 8:
@@ -190,6 +221,34 @@ def parse(rgb, force_cols=None, force_rows=None):
                 b.cell[(r, c)] = "gecko"
                 b.ccol[(r, c)] = m
     b.rgb = rgb
+    b.fhole = {}
+    ICE_ = np.array([40, 214, 253])
+
+    def _tint(r, c):
+        cx, cy = center(r, c); h = int(.42 * s)
+        p = rgb[cy - h:cy + h, cx - h:cx + h].reshape(-1, 3).astype(int)
+        icep = (p[:, 2] > 200) & (p[:, 2] > p[:, 0] + 45)
+        keep = ~(icep | (p.min(1) > 215) | (p.max(1) < 90))
+        if keep.sum() < 30:
+            return None
+        return np.median(p[keep], 0)
+    tints = {c: _tint(*c) for c, k in b.cell.items() if k == "ice"}
+    for c, dg in list(b.digit.items()):
+        if b.cell.get(c) != "ice" or tints.get(c) is None:
+            continue
+        sim = False
+        for d in DIRS:
+            nb = (c[0] + d[0], c[1] + d[1])
+            if b.cell.get(nb) == "ice" and tints.get(nb) is not None and cdist(tints[nb], tints[c]) < 40:
+                sim = True
+        if not sim:   # 沒有同色的冰格相連 -> 這是「冰封的洞」，不是冰凍壁虎
+            cx_, cy_ = center(*c)
+            rc, npt = ring_color(rgb, cx_, cy_, s, frozen=True, ret_n=True)
+            if npt < 25:
+                continue
+            rc = rc.astype(float)
+            col = np.clip((rc - 0.25 * ICE_) / 0.75, 0, 255)
+            b.cell[c] = "hole"; b.hole[c] = col; b.fhole[c] = dg
     return b
 
 
@@ -251,6 +310,22 @@ def arrow_score(b, cell):
     return int(dkr.sum())
 
 
+def _outline(b, comp):
+    """身體格子外緣（沒有同隻鄰格的那一側）的顏色，用來判斷是不是雙色壁虎"""
+    pts = []
+    cs = set(comp)
+    for (r, c) in comp:
+        cx, cy = b.center(r, c)
+        for d in DIRS:
+            if (r + d[0], c + d[1]) in cs:
+                continue
+            for f_ in (.28, .32, .36):
+                p_ = med(b.rgb, int(cx + d[1] * f_ * b.s), int(cy + d[0] * f_ * b.s), 2)
+                if cdist(p_, FLOOR) > 14:
+                    pts.append(p_)
+    return np.median(pts, 0) if pts else None
+
+
 def build_state(b):
     """回傳 dict: geckos(list), holes, static_block, frozen(list)"""
     geckos, frozen = [], []
@@ -258,18 +333,58 @@ def build_state(b):
 
     def same(u, v):
         return cdist(b.ccol[u], b.ccol[v]) < 22
-    for comp in components(gcells, same):
-        if len(comp) < 2:
+    comps = components(gcells, same)
+    singles = [list(c)[0] for c in comps if len(c) == 1]
+    big = [c for c in comps if len(c) >= 2]
+    taken = set()
+    # 雙色壁虎：身體外緣顏色與身體不同 -> 兩端各有一個「外框色」的端點格
+    info = []
+    for comp in big:
+        body = np.median([b.ccol[c] for c in comp], 0)
+        ol = _outline(b, comp)
+        two = ol is not None and cdist(ol, body) > 45
+        info.append([comp, body, ol, two, []])
+    for it in info:
+        comp, body, ol, two, caps = it
+        if not two:
             continue
-        head = max(comp, key=lambda c: eye_score(b, c))
-        paths = ham_paths(comp, head)
+        ends = set()
+        for (r, c) in comp:
+            for d in DIRS:
+                nb = (r + d[0], c + d[1])
+                if nb in singles and nb not in taken:
+                    ends.add(nb)
+        for nb in sorted(ends, key=lambda nb: cdist(b.ccol[nb], ol)):
+            if (cdist(b.ccol[nb], ol) < 60 or cdist(b.ccol[nb], body) > 60) and len(caps) < 2:
+                caps.append(nb)
+        taken.update(caps)
+    for comp, body, ol, two, caps in info:
+        full = set(comp) | set(caps)
+        if len(full) < 2:
+            continue
+        if caps:
+            paths = []
+            for st in caps:
+                paths += [p for p in ham_paths(full, st) if p[-1] in caps]
+            paths = [p for p in paths if p[0] in caps and p[-1] in caps]
+            paths = paths[:1] if paths else ham_paths(full, caps[0])
+            head = caps[0]
+        else:
+            paths = []
+            for st_ in sorted(full, key=lambda c: -eye_score(b, c)):
+                paths = ham_paths(full, st_)
+                if paths:
+                    break
         if not paths:
-            # 找不到走遍的路徑 -> 放棄此元件
             continue
-        if len(paths) > 1:
+        if len(paths) > 1 and not caps:
             paths.sort(key=lambda p: -arrow_score(b, p[-1]))
         col = np.median([b.ccol[c] for c in comp], 0).astype(int)
-        geckos.append(dict(cells=paths[0], color=col))
+        g = dict(cells=paths[0], color=col)
+        if caps:
+            g["color_a"] = np.median([b.ccol[c] for c in caps], 0).astype(int)
+            g["two"] = True
+        geckos.append(g)
     icec = [c for c, k in b.cell.items() if k == "ice"]
     for comp in components(icec, lambda u, v: True):
         dig = [c for c in comp if c in b.digit]
@@ -285,14 +400,17 @@ def build_state(b):
 
 def match_targets(geckos, frozen, holes):
     """每隻壁虎配對同色洞（同色多個洞可互換）。回傳每隻壁虎可進入的洞格集合。"""
-    used = set()
     hc = [(h["cell"], h["color"]) for h in holes]
+
+    def tg(col):
+        ds = sorted(hc, key=lambda h: cdist(col, h[1]))
+        thr = cdist(ds[0][1], col) + 18
+        return {h[0] for h in ds if cdist(h[1], col) <= thr and cdist(h[1], col) < 75}
     for g in geckos:
-        ds = sorted(hc, key=lambda h: cdist(g["color"], h[1]))
-        thr = cdist(ds[0][1], g["color"]) + 18
-        g["targets"] = {h[0] for h in ds if cdist(h[1], g["color"]) <= thr and cdist(h[1], g["color"]) < 55}
-    # 冰凍壁虎：把「還沒被自由壁虎分配到」的洞，用顏色相近度分配
-    # 同色群：把洞分群
+        if g.get("two"):
+            g["targets"] = tg(g["color_a"]); g["targets2"] = tg(g["color"])
+        else:
+            g["targets"] = tg(g["color"]); g["targets2"] = set()
     groups = []
     for h, col in hc:
         for gr in groups:
@@ -302,9 +420,11 @@ def match_targets(geckos, frozen, holes):
             groups.append(dict(color=col, cells={h}))
     need = {id(gr): len(gr["cells"]) for gr in groups}
     for g in geckos:
-        for gr in groups:
-            if g["targets"] and next(iter(g["targets"])) in gr["cells"]:
-                need[id(gr)] -= 1
+        for key in ("targets", "targets2"):
+            if g[key]:
+                for gr in groups:
+                    if next(iter(g[key])) in gr["cells"]:
+                        need[id(gr)] -= 1
     ICE = np.array([40, 214, 253])
     pairs = []
     for fi, f in enumerate(frozen):
@@ -343,6 +463,7 @@ class Solver:
         self.geckos = geckos
         self.frozen = frozen
         self.banned = set()   # 已證實拖了沒反應的起點格，不再嘗試
+        self.fl = sorted(getattr(b, "fhole", {}).items())   # 冰封的洞 [(cell, count)]
 
     def moves_bfs(self, cfg, blocked, targets, used=frozenset(), maxn=4000):
         """單隻壁虎 BFS。回傳 (到洞的最短頭部路徑 or None, {config: 頭部路徑})"""
@@ -357,11 +478,13 @@ class Solver:
                 n = (head[0] + d[0], head[1] + d[1])
                 if n not in self.floorlike:
                     continue
+                if n in blocked:
+                    continue
                 if n in targets and n not in used:
                     if goal is None:
                         goal = (cur, n)
                     continue
-                if (n in self.holes and n not in used) or n in blocked:
+                if n in self.holes and n not in used:
                     continue
                 if n in cur[:-1]:
                     continue
@@ -408,13 +531,22 @@ class Solver:
 
     def initial(self):
         cfgs = tuple(canon(g["cells"]) for g in self.geckos) + tuple(None for _ in self.frozen)
-        cnt = tuple((f["count"] if f["count"] else 99) for f in self.frozen)
+        cnt = tuple((f["count"] if f["count"] else 99) for f in self.frozen) + \
+            tuple((c if c else 99) for _cell, c in self.fl)
         return cfgs, cnt, frozenset()
 
     # 把冰凍壁虎也當成一般壁虎 (index 偏移)，解凍後才可動
-    def all_targets(self, i):
+    def all_targets(self, i, state=None):
         n = len(self.geckos)
-        return (self.geckos[i]["targets"] if i < n else self.frozen[i - n]["targets"])
+        if i < n:
+            g = self.geckos[i]
+            if g.get("two") and state is not None and ("p", i) in state[2]:
+                return g["targets2"]
+            return g["targets"]
+        return self.frozen[i - n]["targets"]
+
+    def is_phase0(self, state, i):
+        return i < len(self.geckos) and self.geckos[i].get("two") and ("p", i) not in state[2]
 
     def mobile(self, state, i):
         n = len(self.geckos)
@@ -437,6 +569,21 @@ class Solver:
         for k, f in enumerate(self.frozen):
             if state[1][k] is not None:
                 blk.update(f["cells"])
+        nf = len(self.frozen)
+        for k, (cell, _cnt) in enumerate(self.fl):
+            if state[1][nf + k] is not None:      # 冰封的洞：倒數到 0 才能進
+                blk.add(cell)
+        return blk
+
+    def static_blocked(self, state):
+        blk = set()
+        for k, f in enumerate(self.frozen):
+            if state[1][k] is not None:
+                blk.update(f["cells"])
+        nf = len(self.frozen)
+        for k, (cell, _c) in enumerate(self.fl):
+            if state[1][nf + k] is not None:
+                blk.add(cell)
         return blk
 
     def goto_hole(self, state):
@@ -447,20 +594,25 @@ class Solver:
                 continue
             best = None
             for ori in (tuple(cfg), tuple(cfg)[::-1]):
-                goal, prev = self.moves_bfs(ori, self.blocked(state, i), self.all_targets(i), state[2])
+                goal, prev = self.moves_bfs(ori, self.blocked(state, i), self.all_targets(i, state), state[2])
                 if goal:
                     p = self.head_path(prev, goal[0], goal[1])
                     if p[0] in self.banned:
                         continue
-                    if best is None or len(p) < len(best):
-                        best = p
+                    if best is None or len(p) < len(best[0]):
+                        best = (p, goal[0])
             if best:
-                res.append((i, best))
+                res.append((i, best[0], best[1]))
         return res
 
-    def apply_remove(self, state, i, hole=None):
-        cfgs = list(state[0]); cfgs[i] = None
+    def apply_remove(self, state, i, hole=None, endcfg=None):
+        cfgs = list(state[0])
         used = state[2] | ({hole} if hole else set())
+        if self.is_phase0(state, i) and endcfg is not None:
+            cfgs[i] = canon(endcfg)          # 外層進洞後，內層壁虎留在原地繼續
+            used = used | {("p", i)}
+        else:
+            cfgs[i] = None
         return self.tick((tuple(cfgs), state[1], used))
 
     def apply_reposition(self, state, i, cfg):
@@ -485,6 +637,7 @@ class Solver:
         init = (tuple(cfgs), init[1], init[2])
         seen = set()
         nodes = [0]
+        seg = [0]    # 每一段(兩次進洞之間)可用的移位次數
         t_end = time.time() + time_limit
 
         def done(st):
@@ -495,6 +648,9 @@ class Solver:
 
         def dfs(st, repos_left, plan):
             nodes[0] += 1
+            rem = sum(1 for c in st[0] if c is not None) + sum(1 for g_ in self.geckos if False)
+            if rem < self.bestrem[0]:
+                self.bestrem[0] = rem
             if done(st):
                 return plan
             if nodes[0] > node_cap or time.time() > t_end:
@@ -504,13 +660,19 @@ class Solver:
             seen.add((st, repos_left))
             gl = self.goto_hole(st)
             if gl:
-                # 進洞一律是好事（只會讓出空間）；取第一個
-                i, path = gl[0]
-                ns = self.apply_remove(st, i, path[-1])
-                r = dfs(ns, repos_left, plan + [(i, path, "goal")])
-                if r is not None:
+                normal = [x for x in gl if not self.is_phase0(st, x[0])]
+                if normal:
+                    # 一般壁虎進洞一律是好事（只會讓出空間）；取第一個
+                    i, path, ec = normal[0]
+                    ns = self.apply_remove(st, i, path[-1], ec)
+                    r = dfs(ns, seg[0], plan + [(i, path, "goal")])
                     return r
-                return None
+                # 雙色壁虎的外層進洞：壁虎還留在場上，要分支嘗試
+                for i, path, ec in gl:
+                    ns = self.apply_remove(st, i, path[-1], ec)
+                    r = dfs(ns, seg[0], plan + [(i, path, "goal")])
+                    if r is not None:
+                        return r
             if repos_left == 0:
                 return None
             # 無法進洞 -> 嘗試把某隻可動壁虎移到別處 (也會讓冰塊倒數)
@@ -535,20 +697,47 @@ class Solver:
                 L = plen(prev, c)
                 if kf not in uniq or L < uniq[kf][0]:
                     uniq[kf] = (L, i, c, prev)
-            good, other = [], []
+            # 聚焦：每隻「想進洞卻被擋住」的壁虎，找出擋路的壁虎，只挑能讓出那條路的位置
+            focus = set()
+            for i in range(len(st[0])):
+                if not self.mobile(st, i):
+                    continue
+                cfg = st[0][i]
+                best_p = None
+                for ori in (tuple(cfg), tuple(cfg)[::-1]):
+                    goal, prev0 = self.moves_bfs(ori, self.static_blocked(st), self.all_targets(i, st), st[2])
+                    if goal:
+                        p0 = self.head_path(prev0, goal[0], goal[1])
+                        if best_p is None or len(p0) < len(best_p):
+                            best_p = p0
+                if not best_p:
+                    continue
+                route = set(best_p)
+                for j, cj in enumerate(st[0]):
+                    if j == i or cj is None or not self.mobile(st, j) or not (set(cj) & route):
+                        continue
+                    ks = [(v[0], kf) for kf, v in uniq.items() if kf[0] == j and not (set(kf[1]) & route)]
+                    ks.sort()
+                    for _L, kf in ks[:14]:
+                        focus.add(kf)
+            good, other, foc = [], [], []
             for kf, (L, i, c, prev) in uniq.items():
                 ns = self.apply_reposition(st, i, c)
-                (good if self.goto_hole(ns) else other).append((L, i, c, prev, ns))
-            good.sort(key=lambda t_: t_[0]); other.sort(key=lambda t_: t_[0])
-            for L, i, c, prev, ns in good + (other[:40] if repos_left > 1 else []):
+                if kf in focus:
+                    foc.append((L, i, c, prev, ns))
+                else:
+                    (good if self.goto_hole(ns) else other).append((L, i, c, prev, ns))
+            good.sort(key=lambda t_: t_[0]); other.sort(key=lambda t_: t_[0]); foc.sort(key=lambda t_: t_[0])
+            for L, i, c, prev, ns in good + foc + (other[:20] if repos_left > 1 else []):
                 r = dfs(ns, repos_left - 1, plan + [(i, self.head_path(prev, c), "repos")])
                 if r is not None:
                     return r
             return None
 
         self.partial = False
+        self.bestrem = [99]
         for rl in range(0, max_repos + 1):
-            seen.clear(); nodes[0] = 0
+            seen.clear(); nodes[0] = 0; seg[0] = rl
             r = dfs(init, rl, [])
             if r is not None:
                 return r
@@ -556,7 +745,7 @@ class Solver:
         gl = self.goto_hole(init)
         if gl:
             self.partial = True
-            i, path = gl[0]
+            i, path, _ec = gl[0]
             return [(i, path, "goal")]
         return None
 
