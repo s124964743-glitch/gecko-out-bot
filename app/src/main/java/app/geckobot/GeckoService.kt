@@ -2,6 +2,7 @@ package app.geckobot
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Path
@@ -59,6 +60,20 @@ class GeckoService : AccessibilityService() {
     private var overlay: TextView? = null
     private var overlayParams: WindowManager.LayoutParams? = null
     private var unknownSaved = 0
+    @Volatile private var fgPkg: String? = null
+    private val launchers: Set<String> by lazy {
+        try {
+            packageManager.queryIntentActivities(
+                Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME), 0
+            ).map { it.activityInfo.packageName }.toSet()
+        } catch (_: Throwable) { emptySet() }
+    }
+
+    /** 主畫面(桌面)或本 App 本身：不該操作、也不顯示懸浮按鈕 */
+    private fun isIdleScreen(): Boolean {
+        val p = fgPkg ?: return false
+        return p in launchers || p == packageName
+    }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -72,7 +87,13 @@ class GeckoService : AccessibilityService() {
         applyOverlay()
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event?.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
+        val p = event.packageName?.toString() ?: return
+        if (p == "com.android.systemui" || p.contains("inputmethod")) return
+        fgPkg = p
+        updateOverlayVisibility()
+    }
     override fun onInterrupt() {}
 
     override fun onDestroy() {
@@ -89,6 +110,12 @@ class GeckoService : AccessibilityService() {
 
     private fun start() {
         if (running) return
+        // 第一次開始時，記住目前前景的 App 當作遊戲；之後只在這個 App 裡顯示懸浮按鈕
+        val cur = fgPkg
+        if (Prefs.gamePkg(this) == null && cur != null && !isIdleScreen()) {
+            Prefs.setGamePkg(this, cur)
+            log("已記住遊戲：$cur")
+        }
         running = true
         updateOverlay()
         worker = Thread { loop() }.also { it.isDaemon = true; it.start() }
@@ -112,8 +139,15 @@ class GeckoService : AccessibilityService() {
             log("載入 brain 失敗: $e"); running = false; updateOverlay(); return
         }
         var fails = 0
+        var idleLogged = false
         while (running) {
             try {
+                if (isIdleScreen()) {
+                    if (!idleLogged) { log("目前在主畫面/本 App，暫停操作，回到遊戲後自動繼續"); idleLogged = true }
+                    Thread.sleep(1000)
+                    continue
+                }
+                idleLogged = false
                 val bmp = screenshot(rawFile)
                 if (bmp == null) {
                     fails++
@@ -265,6 +299,7 @@ class GeckoService : AccessibilityService() {
             wm.addView(tv, lp)
             overlay = tv; overlayParams = lp
             updateOverlay()
+            updateOverlayVisibility()
         } catch (e: Throwable) {
             log("懸浮按鈕建立失敗: $e")
         }
@@ -274,6 +309,13 @@ class GeckoService : AccessibilityService() {
         val tv = overlay ?: return
         try { (getSystemService(WINDOW_SERVICE) as WindowManager).removeView(tv) } catch (_: Throwable) {}
         overlay = null
+    }
+
+    fun updateOverlayVisibility() {
+        val tv = overlay ?: return
+        val game = Prefs.gamePkg(this)
+        val show = !isIdleScreen() && (game == null || fgPkg == null || fgPkg == game)
+        tv.post { tv.visibility = if (show) View.VISIBLE else View.GONE }
     }
 
     private fun updateOverlay() {
