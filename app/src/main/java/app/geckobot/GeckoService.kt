@@ -90,10 +90,16 @@ class GeckoService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event?.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
         val p = event.packageName?.toString() ?: return
-        if (p == "com.android.systemui" || p.contains("inputmethod")) return
+        // 本 App 只有 MainActivity 才算「在本 App 裡」；懸浮按鈕自己的視窗事件要忽略
+        if (p == packageName) {
+            if (event.className?.toString()?.endsWith("MainActivity") != true) return
+        }
+        // 系統介面、輸入法、ROG 遊戲工具列(Game Genie)等浮動視窗不代表「目前的 App」
+        if (p == "com.android.systemui" || p.contains("inputmethod") || p.startsWith("com.asus")) return
         fgPkg = p
         updateOverlayVisibility()
     }
+
     override fun onInterrupt() {}
 
     override fun onDestroy() {
@@ -110,12 +116,6 @@ class GeckoService : AccessibilityService() {
 
     private fun start() {
         if (running) return
-        // 第一次開始時，記住目前前景的 App 當作遊戲；之後只在這個 App 裡顯示懸浮按鈕
-        val cur = fgPkg
-        if (Prefs.gamePkg(this) == null && cur != null && !isIdleScreen()) {
-            Prefs.setGamePkg(this, cur)
-            log("已記住遊戲：$cur")
-        }
         running = true
         updateOverlay()
         worker = Thread { loop() }.also { it.isDaemon = true; it.start() }
@@ -313,8 +313,7 @@ class GeckoService : AccessibilityService() {
 
     fun updateOverlayVisibility() {
         val tv = overlay ?: return
-        val game = Prefs.gamePkg(this)
-        val show = !isIdleScreen() && (game == null || fgPkg == null || fgPkg == game)
+        val show = !isIdleScreen()
         tv.post { tv.visibility = if (show) View.VISIBLE else View.GONE }
     }
 

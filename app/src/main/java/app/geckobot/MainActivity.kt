@@ -50,13 +50,6 @@ class MainActivity : Activity() {
         }
         root.addView(toggle)
 
-        root.addView(Button(this).apply {
-            text = "重新偵測遊戲（清除已記住的遊戲 App）"
-            setOnClickListener {
-                Prefs.setGamePkg(this@MainActivity, null)
-                toast("已清除；下次在遊戲裡按開始時會重新記住")
-            }
-        })
         root.addView(CheckBox(this).apply {
             text = "顯示畫面上的懸浮開始/暫停按鈕"
             isChecked = Prefs.overlay(this@MainActivity)
