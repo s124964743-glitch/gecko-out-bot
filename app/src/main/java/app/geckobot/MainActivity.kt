@@ -14,6 +14,7 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var logView: TextView
     private lateinit var toggle: Button
+    private lateinit var gameBtn: Button
     private val handler = Handler(Looper.getMainLooper())
     private val ticker = object : Runnable {
         override fun run() {
@@ -37,6 +38,10 @@ class MainActivity : Activity() {
         status = TextView(this).apply { textSize = 15f; setPadding(0, pad / 2, 0, pad / 2) }
         root.addView(status)
 
+        gameBtn = Button(this).apply {
+            setOnClickListener { pickGame() }
+        }
+        root.addView(gameBtn)
         root.addView(Button(this).apply {
             text = "① 開啟無障礙設定（找到「壁虎自動過關」並開啟）"
             setOnClickListener { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
@@ -64,7 +69,7 @@ class MainActivity : Activity() {
             setOnCheckedChangeListener { _, v -> Prefs.setJoinEvents(this@MainActivity, v) }
         })
         root.addView(TextView(this).apply {
-            text = "用法：先把 Gecko Out 開到任何畫面（遊戲中、過關畫面、主畫面都行），按懸浮按鈕或這裡的「開始」。" +
+            text = "用法：先在最上方選好遊戲，再切到 Gecko Out，畫面下方會出現懸浮按鈕（只在該遊戲裡顯示，主畫面與其他 App 不會出現）；按它即開始/暫停。" +
                 "App 會自動辨識棋盤、拖曳壁虎，過關後自動關閉 Island Quest / Ancient Climb 等彈窗並按 PLAY 進下一關。再按一次即暫停。"
             textSize = 13f
             setPadding(0, pad / 2, 0, pad / 2)
@@ -73,6 +78,20 @@ class MainActivity : Activity() {
         root.addView(ScrollView(this).apply { addView(logView) },
             LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         setContentView(root)
+    }
+
+    private fun pickGame() {
+        val pm = packageManager
+        val apps = pm.queryIntentActivities(
+            Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0
+        ).filter { it.activityInfo.packageName != packageName }
+            .map { it.loadLabel(pm).toString() to it.activityInfo.packageName }
+            .distinctBy { it.second }.sortedBy { it.first.lowercase() }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("選擇要自動操作的遊戲")
+            .setItems(apps.map { it.first }.toTypedArray()) { _, i ->
+                Prefs.setGamePkg(this, apps[i].second); refresh()
+            }.show()
     }
 
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
@@ -84,6 +103,10 @@ class MainActivity : Activity() {
             s.running -> "狀態：執行中 ▶（步數 ${s.moves}，過關 ${s.levels}）"
             else -> "狀態：已就緒，暫停中 ⏸"
         }
+        val g = s?.gamePkg() ?: Prefs.gamePkg(this)
+        gameBtn.text = "目標遊戲：" + (g?.let { pk ->
+            try { packageManager.getApplicationLabel(packageManager.getApplicationInfo(pk, 0)).toString() } catch (_: Throwable) { pk }
+        } ?: "未選擇（點此選 Gecko Out）")
         logView.text = GeckoService.logLines().joinToString("\n")
     }
 

@@ -69,11 +69,24 @@ class GeckoService : AccessibilityService() {
         } catch (_: Throwable) { emptySet() }
     }
 
-    /** 主畫面(桌面)或本 App 本身：不該操作、也不顯示懸浮按鈕 */
-    private fun isIdleScreen(): Boolean {
-        val p = fgPkg ?: return false
-        return p in launchers || p == packageName
+    /** 目標遊戲套件：使用者選的；沒選就自動找名稱含 gecko 的 App */
+    fun gamePkg(): String? {
+        Prefs.gamePkg(this)?.let { return it }
+        return try {
+            val pm = packageManager
+            pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
+                .firstOrNull { it.loadLabel(pm).toString().contains("gecko", true) && it.activityInfo.packageName != packageName }
+                ?.activityInfo?.packageName
+        } catch (_: Throwable) { null }
     }
+
+    private fun inGame(): Boolean {
+        val g = gamePkg() ?: return false
+        return fgPkg == g
+    }
+
+    /** 不在遊戲裡就不操作、不顯示懸浮按鈕 */
+    private fun isIdleScreen(): Boolean = !inGame()
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -140,13 +153,20 @@ class GeckoService : AccessibilityService() {
         }
         var fails = 0
         var idleLogged = false
+        var foreign = 0
         while (running) {
             try {
                 if (isIdleScreen()) {
-                    if (!idleLogged) { log("目前在主畫面/本 App，暫停操作，回到遊戲後自動繼續"); idleLogged = true }
+                    if (!idleLogged) { log("目前不在 Gecko Out，暫停操作，回到遊戲後自動繼續"); idleLogged = true }
+                    val f = fgPkg
+                    if (f != null && f != packageName && f !in launchers && f != "com.google.android.apps.nexuslauncher") {
+                        foreign++
+                        if (foreign >= 6) { foreign = 0; performGlobalAction(GLOBAL_ACTION_BACK) }
+                    } else foreign = 0
                     Thread.sleep(1000)
                     continue
                 }
+                foreign = 0
                 idleLogged = false
                 val bmp = screenshot(rawFile)
                 if (bmp == null) {
