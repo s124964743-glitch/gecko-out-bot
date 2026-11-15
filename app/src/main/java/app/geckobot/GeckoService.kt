@@ -244,8 +244,9 @@ class GeckoService : AccessibilityService() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = (8 * d).toInt()
-            y = (150 * d).toInt()
+            x = (6 * d).toInt()
+            // 放在畫面最下方的空白處（遊戲道具列下面、主畫面導覽列上面），不遮到棋盤
+            y = (resources.displayMetrics.heightPixels * 0.915).toInt()
         }
         var downX = 0f; var downY = 0f; var startX = 0; var startY = 0; var moved = false
         tv.setOnTouchListener { _: View, e: MotionEvent ->

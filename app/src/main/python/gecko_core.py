@@ -342,6 +342,7 @@ class Solver:
         self.holes = {h["cell"] for h in holes}
         self.geckos = geckos
         self.frozen = frozen
+        self.banned = set()   # 已證實拖了沒反應的起點格，不再嘗試
 
     def moves_bfs(self, cfg, blocked, targets, used=frozenset(), maxn=4000):
         """單隻壁虎 BFS。回傳 (到洞的最短頭部路徑 or None, {config: 頭部路徑})"""
@@ -449,6 +450,8 @@ class Solver:
                 goal, prev = self.moves_bfs(ori, self.blocked(state, i), self.all_targets(i), state[2])
                 if goal:
                     p = self.head_path(prev, goal[0], goal[1])
+                    if p[0] in self.banned:
+                        continue
                     if best is None or len(p) < len(best):
                         best = p
             if best:
@@ -543,11 +546,18 @@ class Solver:
                     return r
             return None
 
+        self.partial = False
         for rl in range(0, max_repos + 1):
             seen.clear(); nodes[0] = 0
             r = dfs(init, rl, [])
             if r is not None:
                 return r
+        # 找不到完整解（例如有尚未支援的機制）：至少做「現在就能進洞」的安全步驟
+        gl = self.goto_hole(init)
+        if gl:
+            self.partial = True
+            i, path = gl[0]
+            return [(i, path, "goal")]
         return None
 
 

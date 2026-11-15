@@ -32,6 +32,8 @@ class Brain:
         self.move_repeat = 0
         self.moves = 0
         self.levels = 0
+        self.nosol = 0
+        self.banned = set()
 
     def configure(self, join_events):
         popups.JOIN_EVENTS = bool(join_events)
@@ -51,6 +53,7 @@ class Brain:
             gc.GRID_CACHE.clear()          # 新關卡棋盤可能不同
             self.prev_small = None
             self.last_move = None
+            self.banned = set()
             if scr == 'welldone' and self.last_screen != 'welldone':
                 self.levels += 1
             self.same_count = self.same_count + 1 if scr == self.last_screen else 0
@@ -83,18 +86,26 @@ class Brain:
             self.prev_small = small
             self.settle_wait = 0
             self.unknown = 0
-            plan = gc.Solver(b, geckos, frozen, holes).solve()
+            solver = gc.Solver(b, geckos, frozen, holes)
+            solver.banned = self.banned
+            plan = solver.solve()
             if not plan:
-                return {"a": "wait", "sleep": 1.5, "msg": "找不到解，重新辨識中"}
+                self.nosol += 1
+                return {"a": "wait", "sleep": 1.5, "unknown": self.nosol in (1, 4),
+                        "msg": f"找不到解（壁虎{len(geckos)} 冰{len(frozen)} 洞{len(holes)}），可能是新機制，已存截圖"}
             gi, path, kind = plan[0]
+            if getattr(solver, "partial", False):
+                kind += "(部分解)"
             pts = [list(b.center(r, c)) for r, c in path]
             sig = (tuple(map(tuple, pts)), tuple(sorted(c for c, k in b.cell.items() if k == "gecko")))
             self.move_repeat = self.move_repeat + 1 if sig == self.last_move else 0
             self.last_move = sig
-            if self.move_repeat >= 3:
+            if self.move_repeat >= 2:
                 self.move_repeat = 0
                 self.last_move = None
-                return {"a": "back", "sleep": 1.0, "msg": "同一步重複 4 次沒反應，按返回鍵"}
+                self.banned.add(tuple(pts[0]) and path[0])
+                return {"a": "wait", "sleep": 0.8, "unknown": True,
+                        "msg": f"同一步拖了 3 次沒反應，先跳過起點 {path[0]}（可能有鎖/鑰匙等新機制）"}
             self.moves += 1
             return {"a": "drag", "pts": pts, "sleep": 1.7,
                     "msg": f"第{self.moves}步 {kind} {path[0]}→{path[-1]}"}
