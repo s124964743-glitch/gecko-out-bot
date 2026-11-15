@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">壁虎自動過關</string>
+    <string name="service_desc">截取畫面辨識 Gecko Out 棋盤，並模擬手指拖曳壁虎進洞、自動關閉過關後的彈窗。</string>
+</resources>
