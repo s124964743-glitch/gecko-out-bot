@@ -17,6 +17,7 @@ for _k, (_box, _b64) in TEMPLATES.items():
 # 畫面名稱 -> (動作, 座標)；動作 'tap' 點一下，'wait' 等待動畫
 ACTIONS = {
     'welldone':      ('tap', (540, 1635)),   # 過關結算：點「40」(不看廣告的那顆)
+    'newfeature':    ('tap', (540, 1757)),   # NEW FEATURE Unlocked：點青色「40」
     'island_dialog': ('tap', (984, 510)),    # Island Quest 邀請窗：右上 X
     'island_tap':    ('tap', (540, 1700)),   # Island Quest 說明頁：Tap to continue
     'island_find':   ('wait', None),         # 配對玩家中
@@ -71,6 +72,12 @@ def _welldone_fallback(rgb, w, h):
     cyan = ((b[:, 0] < 90) & (b[:, 1] > 170) & (b[:, 2] > 200)).mean()
     if orange > 0.25 and cyan > 0.25:
         return 'welldone'
+    t2 = img[330:470, 60:1020].reshape(-1, 3).astype(int)
+    yel = ((t2[:, 0] > 230) & (t2[:, 1] > 150) & (t2[:, 1] < 240) & (t2[:, 2] < 120)).mean()
+    b2 = img[1690:1830, 380:700].reshape(-1, 3).astype(int)
+    cyan2 = ((b2[:, 0] < 90) & (b2[:, 1] > 170) & (b2[:, 2] > 200)).mean()
+    if yel > 0.15 and cyan2 > 0.25:
+        return 'newfeature'
     return None
 
 
