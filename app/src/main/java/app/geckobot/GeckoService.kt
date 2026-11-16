@@ -45,7 +45,7 @@ class GeckoService : AccessibilityService() {
         fun log(s: String) {
             synchronized(buf) {
                 buf.addLast("${fmt.format(Date())} $s")
-                while (buf.size > 80) buf.removeFirst()
+                while (buf.size > 300) buf.removeFirst()
             }
         }
 

@@ -55,6 +55,14 @@ class MainActivity : Activity() {
         }
         root.addView(toggle)
 
+        root.addView(Button(this).apply {
+            text = "複製紀錄（出問題時貼給 Claude）"
+            setOnClickListener {
+                val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("gecko-log", GeckoService.logLines().reversed().joinToString("\n")))
+                toast("已複製 ${GeckoService.logLines().size} 行紀錄")
+            }
+        })
         root.addView(CheckBox(this).apply {
             text = "顯示畫面上的懸浮開始/暫停按鈕"
             isChecked = Prefs.overlay(this@MainActivity)

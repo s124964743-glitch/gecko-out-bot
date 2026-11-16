@@ -332,7 +332,7 @@ def parse(rgb, force_cols=None, force_rows=None):
         sim = False
         for d in DIRS:
             nb = (c[0] + d[0], c[1] + d[1])
-            if b.cell.get(nb) == "ice" and tints.get(nb) is not None and cdist(tints[nb], tints[c]) < 40:
+            if b.cell.get(nb) == "ice" and tints.get(nb) is not None and cdist(tints[nb], tints[c]) < 26:
                 sim = True
         if not sim:   # 沒有同色的冰格相連 -> 這是「冰封的洞」，不是冰凍壁虎
             cx_, cy_ = center(*c)
@@ -419,6 +419,30 @@ def _outline(b, comp):
     return np.median(pts, 0) if pts else None
 
 
+def _merge_blink(b, comps):
+    """頭部眨眼/表情動畫會讓端點格顏色偏暗，被切成獨立單格：
+    把「顏色接近、且正好接在某條壁虎端點」的單格併回去（雙色壁虎的外框色差很大，不受影響）。"""
+    comps = [list(c) for c in comps]
+    for sc in [c for c in comps if len(c) == 1]:
+        cell = sc[0]
+        best = None
+        for big in comps:
+            if big is sc or len(big) < 2:
+                continue
+            cs = set(big)
+            for d in DIRS:
+                nb = (cell[0] + d[0], cell[1] + d[1])
+                if nb in cs and sum(1 for e in DIRS if (nb[0] + e[0], nb[1] + e[1]) in cs) == 1:
+                    # 只比色相(Lab 的 a,b)：眨眼只會變暗，色相差約 15；雙色壁虎的外框色色相差 >= 43
+                    la = lab(b.ccol[cell]); lb = lab(np.median([b.ccol[c] for c in big], 0))
+                    dist = float(np.linalg.norm(la[1:] - lb[1:]))
+                    if dist < 24 and (best is None or dist < best[0]):
+                        best = (dist, big)
+        if best:
+            best[1].append(cell); sc.clear()
+    return [c for c in comps if c]
+
+
 def build_state(b):
     """回傳 dict: geckos(list), holes, static_block, frozen(list)"""
     geckos, frozen = [], []
@@ -426,7 +450,7 @@ def build_state(b):
 
     def same(u, v):
         return cdist(b.ccol[u], b.ccol[v]) < 22
-    comps = components(gcells, same)
+    comps = _merge_blink(b, components(gcells, same))
     singles = [list(c)[0] for c in comps if len(c) == 1]
     big = [c for c in comps if len(c) >= 2]
     taken = set()
