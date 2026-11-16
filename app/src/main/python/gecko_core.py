@@ -20,6 +20,7 @@ import cv2
 FLOOR = np.array([135, 160, 184])
 VOID = np.array([215, 227, 235])
 _TPL_B64 = {  # 由實機截圖取樣的數字模板 (24x32)，其餘數字退回 pytesseract
+    '6': "AAP8AD/+AH/+Af/+A//+B//8D/+AH/wAH/AAP+AAP8AAP4AAf4AAf/8Af//gf//4f//4///8///+/4H+/wD//wD/fwD/fwD/f4D+f8P+P//+H//8H//4D//wA//AAH4A",
     '7': "f//+f//+///////////+f//+B//+AAP8AAP8AAP8AAf4AAfwAA/wAB/gAD/gAD/AAH+AAH+AAP8AAP4AAP4AAf4AA/wAA/gAA/gAB/gAB/AAB/AAB/AAB/AAB+AAB+AA",
     '1': "AAB/AAH/AAP/AA//AB//AH//AP//AP//AH//AAB/AAB/AAB/AAB/AAB/AAB/AAB/AAB/AAB/AAB/AAB/AAB/AAB/AAB/AAB+AAAAAAAAAAAAAAAAAAAA8AAA+AAAcAAA",
     '4': "AwAIB+B/D+B/D+B/D+B/D+B/H8B/H8B/H8B/P8B/P4B/P4B/P4B/f4B/fwB/fwB//8D/////////////////////P///AAD/AAB/AAB/AAB/AAB/AAB/AAB/AAB/AAB+",
@@ -142,9 +143,39 @@ def detect_grid(rgb, force_cols=None, force_rows=None):
         ycen = None
     if ycen is None and sy != s:
         ycen = [y0_ + (r + .5) * sy for r in range(rows)]
+    if ycen is None:
+        # 透視：上半部列距比下半部小（約 108px vs 113px）。固定格距在上方會偏 0.2 格 -> 用洞的實際位置擬合各列中心
+        try:
+            ycen = _hole_rows(holes, s, y0_, sy, rows) or ycen
+        except Exception:
+            pass
     if ycen is not None and not force_rows:
         rows = len(ycen)
     return x0_, y0_, s, cols, rows, ycen
+
+
+def _hole_rows(holes, s, y0, sy, rows):
+    if len(holes) < 5:
+        return None
+    pts = []
+    for h in holes:
+        tc = float(h[0][1] - 0.10 * s)
+        r = int(round((tc - (y0 + .5 * sy)) / sy))
+        if 0 <= r < rows:
+            pts.append((r, tc))
+    rs = sorted({p[0] for p in pts})
+    if len(rs) < 4:
+        return None
+    R = np.array([p[0] for p in pts], float); Y = np.array([p[1] for p in pts])
+    uni = np.abs(y0 + (R + .5) * sy - Y).max()
+    if uni < 0.10 * s:
+        return None          # 固定格距已經夠準，不動
+    deg = 2 if len(rs) >= 6 else 1
+    co = np.polyfit(R, Y, deg)
+    res = np.abs(np.polyval(co, R) - Y).max()
+    if res > 0.6 * uni or res > 0.10 * s:
+        return None
+    return [float(np.polyval(co, r)) for r in range(rows)]
 
 
 def _perspective_rows(fl, xmin, xmax, ymin, ymax, holes, s, y0):
@@ -290,7 +321,13 @@ def _metal(b, rgb, center, s):
         else:
             continue
         if ok.mean() >= 0.25:
-            fix[cell] = np.median(p[ok], 0)
+            q = p[ok]
+            hh = cv2.cvtColor(q.astype(np.uint8).reshape(-1, 1, 3), cv2.COLOR_RGB2HSV).reshape(-1, 3)[:, 0].astype(int)
+            # 鏈條的橘褐色邊緣會污染中位數：取「色相出現最多」的那一群
+            binid = ((hh + 6) % 180) // 12
+            top = np.bincount(binid, minlength=15).argmax()
+            sel = binid == top
+            fix[cell] = np.median(q[sel], 0)
         else:
             fix[cell] = None
     for cell, col in fix.items():
@@ -508,8 +545,8 @@ def _lock_key(b, cells):
     """回傳 (lock, key)：'silver'/'gold'/None。鎖 = 身上有 >=2 格被鏈條(金屬色)蓋住；鑰匙 = 只有 1 格小面積金屬。"""
     sil = [b.sil.get(c, 0) for c in cells]
     gold = [b.gold.get(c, 0) for c in cells]
-    col = np.median([b.ccol[c] for c in cells], 0)
-    if sum(1 for v in sil if v >= 0.10) >= 2:
+    col = np.mean([b.ccol[c] for c in cells], 0)
+    if (sum(1 for v in sil if v >= 0.10) >= 2) or (sum(1 for v in sil if v >= 0.05) >= 2 and max(sil) >= 0.15):
         return "silver", None
     if col[1] < 185:     # 金色只在「非黃色」壁虎上判斷（黃色壁虎本身就是金色）
         if sum(1 for v in gold if v >= 0.10) >= 2:
@@ -534,10 +571,10 @@ def _split_caps(b, comps):
     for sm in [c for c in out if len(c) == 2]:
         scol = np.median([b.ccol[c] for c in sm], 0)
         for big in out:
-            if big is sm or len(big) < 3:
+            if big is sm or len(big) < 2:
                 continue
             bcol = np.median([b.ccol[c] for c in big], 0)
-            if hue_d(scol, bcol) < 45:
+            if hue_d(scol, bcol) < 28:
                 continue
             eps = endpoints(big)
             if len(eps) != 2:
@@ -560,14 +597,73 @@ def _split_caps(b, comps):
     return out
 
 
+def _split_locked(b, comps, same):
+    """兩隻同色壁虎並排、其中一隻被鎖鏈蓋住時，中間的縫被鏈條遮住而併成一塊（出現分岔/2x2）。
+    有鏈條的格子排成一直線 -> 那條直線上連續的格子是上鎖的壁虎，其餘的另成一塊。"""
+    out = []
+    for comp in comps:
+        cs = set(comp)
+        deg = {c: sum(1 for d in DIRS if (c[0] + d[0], c[1] + d[1]) in cs) for c in comp}
+        block = any((r + 1, c) in cs and (r, c + 1) in cs and (r + 1, c + 1) in cs for (r, c) in comp)
+        if len(comp) < 5 or not (block or max(deg.values()) >= 3):
+            out.append(comp); continue
+        fl = [c for c in comp if b.sil.get(c, 0) >= 0.05 or b.gold.get(c, 0) >= 0.10]
+        if len(fl) < 2:
+            out.append(comp); continue
+        run = None
+        if len({c[1] for c in fl}) == 1:
+            col = fl[0][1]
+            r0 = min(c[0] for c in fl); r1 = max(c[0] for c in fl)
+            while (r0 - 1, col) in cs: r0 -= 1
+            while (r1 + 1, col) in cs: r1 += 1
+            run = [(r, col) for r in range(r0, r1 + 1)]
+        elif len({c[0] for c in fl}) == 1:
+            row = fl[0][0]
+            c0 = min(c[1] for c in fl); c1 = max(c[1] for c in fl)
+            while (row, c0 - 1) in cs: c0 -= 1
+            while (row, c1 + 1) in cs: c1 += 1
+            run = [(row, c) for c in range(c0, c1 + 1)]
+        if not run or len(run) < 2 or len(run) >= len(comp):
+            out.append(comp); continue
+        out.append(run)
+        rest = [c for c in comp if c not in set(run)]
+        # 剩下的用「不看縫隙」的相鄰關係重新分塊
+        seen = set()
+        for c in rest:
+            if c in seen:
+                continue
+            piece, st = [], [c]; seen.add(c)
+            while st:
+                u = st.pop(); piece.append(u)
+                for d in DIRS:
+                    v = (u[0] + d[0], u[1] + d[1])
+                    if v in rest and v not in seen:
+                        seen.add(v); st.append(v)
+            out.append(piece)
+    return out
+
+
+def _linked(b, u, v):
+    """相鄰兩格的中心連線上若露出地板（壁虎身體比格子細，兩隻同色壁虎並排時中間會有縫），就不是同一隻。"""
+    (x1, y1), (x2, y2) = b.center(*u), b.center(*v)
+    gap = 0
+    for k in range(1, 10):
+        f = k / 10.0
+        px = med(b.rgb, int(x1 + (x2 - x1) * f), int(y1 + (y2 - y1) * f), 2)
+        if cdist(px, FLOOR) < 9:
+            gap += 1
+    return gap < 2
+
+
 def build_state(b):
     """回傳 dict: geckos(list), holes, static_block, frozen(list)"""
     geckos, frozen = [], []
     gcells = [c for c, k in b.cell.items() if k == "gecko"]
 
     def same(u, v):
-        return cdist(b.ccol[u], b.ccol[v]) < 22
-    comps = _merge_blink(b, components(gcells, same))
+        return cdist(b.ccol[u], b.ccol[v]) < 22 and _linked(b, u, v)
+    comps = _split_locked(b, components(gcells, same), same)
+    comps = _merge_blink(b, comps)
     comps = _split_caps(b, comps)
     singles = [list(c)[0] for c in comps if len(c) == 1]
     big = [c for c in comps if len(c) >= 2]
@@ -577,7 +673,10 @@ def build_state(b):
     for comp in big:
         body = np.median([b.ccol[c] for c in comp], 0)
         ol = _outline(b, comp)
-        two = ol is not None and cdist(ol, body) > 45 and _lock_key(b, comp)[0] is None
+        two = ol is not None and cdist(ol, body) > 45
+        yel = two and ol[0] > 200 and ol[1] > 185 and ol[2] < 120      # 黃色外框：金色像素是外框，不是鎖鏈
+        if two and not yel and _lock_key(b, comp)[0] is not None:
+            two = False
         info.append([comp, body, ol, two, [], set()])
     # 補強：外框色沒抓準時，改看「路徑兩端各接一個顏色明顯不同、彼此相近的單格」
     for it in info:
@@ -654,6 +753,10 @@ def build_state(b):
         if caps:
             g["color_a"] = np.median([b.ccol[c] for c in caps], 0).astype(int)
             g["two"] = True
+            ca = g["color_a"]
+            if ca[0] > 200 and ca[1] > 185 and ca[2] < 120:    # 黃色外框
+                if g["lock"] == "gold": g["lock"] = None
+                if g["key"] == "gold": g["key"] = None
         geckos.append(g)
     icec = [c for c, k in b.cell.items() if k == "ice"]
     for comp in components(icec, lambda u, v: True):

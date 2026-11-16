@@ -151,7 +151,7 @@ class Brain:
                 # （解不出來就放棄、馬上重拍下一張）
                 # 開局解不出來通常是這張截圖剛好在動畫中；先快速放棄、重拍，連續失敗才加長上限
                 if self.level_moves == 0:
-                    lim = (8.0, 15.0, 30.0, 45.0)[min(self.nosol, 3)]
+                    lim = (20.0, 30.0, 45.0, 60.0)[min(self.nosol, 3)]
                 else:
                     lim = 5.0
                 plan = solver.solve(max_repos=(3 if self.nosol < 2 else 5), node_cap=80000, time_limit=lim)
