@@ -360,16 +360,16 @@ class GeckoService : AccessibilityService() {
             gravity = Gravity.CENTER
             setSingleLine(true)
             background = GradientDrawable().apply { cornerRadius = dp(8).toFloat(); setColor(Color.parseColor("#3A4A42")) }
-            setPadding(dp(4), dp(7), dp(4), dp(7))
+            setPadding(dp(4), dp(3), dp(4), dp(3))
             setOnClickListener { onClick() }
         }
         val st = TextView(this).apply {
-            textSize = 11f
+            textSize = 10f
             setTextColor(Color.parseColor("#E8D3A2"))
             setSingleLine(true)
             ellipsize = android.text.TextUtils.TruncateAt.END
             text = "點「開始」啟動"
-            setPadding(dp(2), 0, dp(2), dp(3))
+            setPadding(dp(2), 0, dp(2), dp(1))
         }
         val tb = mkBtn("▶ 開始") { toggle() }
         val row = LinearLayout(this).apply {
@@ -381,22 +381,22 @@ class GeckoService : AccessibilityService() {
         }
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = GradientDrawable().apply { cornerRadius = dp(12).toFloat(); setColor(Color.parseColor("#D91F2A24")) }
-            setPadding(dp(6), dp(5), dp(6), dp(5))
+            background = GradientDrawable().apply { cornerRadius = 0f; setColor(Color.parseColor("#E61F2A24")) }
+            setPadding(dp(4), dp(2), dp(4), dp(2))
             addView(st)
             addView(row)
         }
         val lp = WindowManager.LayoutParams(
-            (dm.widthPixels * 0.74).toInt(), WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
                 WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
             PixelFormat.TRANSLUCENT
         ).apply {
-            // 放在畫面最底下一排（遊戲道具列下面、系統手勢列上面），靠右，避開左下角的遊戲暫停鍵
-            gravity = Gravity.BOTTOM or Gravity.END
-            x = dp(6)
-            y = dp(26)
+            // 貼齊螢幕最下方、與螢幕等寬
+            gravity = Gravity.BOTTOM or Gravity.START
+            x = 0
+            y = 0
         }
         try {
             wm.addView(col, lp)
