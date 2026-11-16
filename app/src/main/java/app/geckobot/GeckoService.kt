@@ -2,12 +2,18 @@ package app.geckobot
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.ContentValues
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Path
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
+import android.os.Handler
+import android.os.Looper
+import android.provider.MediaStore
 import android.view.Display
 import android.view.Gravity
 import android.view.MotionEvent
@@ -15,6 +21,7 @@ import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityWindowInfo
+import android.widget.LinearLayout
 import android.widget.TextView
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
@@ -58,10 +65,10 @@ class GeckoService : AccessibilityService() {
 
     private var worker: Thread? = null
     private val exec = Executors.newSingleThreadExecutor()
-    private var overlay: TextView? = null
-    private var overlayParams: WindowManager.LayoutParams? = null
+    private var bar: LinearLayout? = null          // 遊戲底部那一排（狀態文字 + 三顆按鈕）
+    private var toggleBtn: TextView? = null
     private var statusTv: TextView? = null
-    private var statusParams: WindowManager.LayoutParams? = null
+    private val diagExec = Executors.newSingleThreadExecutor()
     private var unknownSaved = 0
     @Volatile private var fgPkg: String? = null
     @Volatile private var lastGameMs = 0L
@@ -147,7 +154,7 @@ class GeckoService : AccessibilityService() {
         super.onDestroy()
     }
 
-    // ------------------------------------------------------------ 狀態提示（懸浮按鈕旁的小字）
+    // ------------------------------------------------------------ 狀態提示
     fun setStatus(t: String) {
         val tv = statusTv ?: return
         tv.post { tv.text = t }
@@ -242,7 +249,7 @@ class GeckoService : AccessibilityService() {
                     "drag" -> {
                         val arr = j.getJSONArray("pts")
                         val pts = (0 until arr.length()).map { arr.getJSONArray(it).let { p -> p.getInt(0) to p.getInt(1) } }
-                        gesture(pts, ((pts.size - 1) * 140L + 200L))
+                        gesture(pts, ((pts.size - 1) * 50L + 100L).coerceAtMost(900L))   // 壁虎滑很快：每格約 50ms，整條拖曳最多 0.9 秒
                     }
                     "back" -> performGlobalAction(GLOBAL_ACTION_BACK)
                 }
@@ -325,117 +332,141 @@ class GeckoService : AccessibilityService() {
         return ok
     }
 
-    // ------------------------------------------------------------ 懸浮按鈕
+    // ------------------------------------------------------------ 遊戲底部一排（樣式比照旭集訂位：狀態文字 + 一排等寬小按鈕）
     fun applyOverlay() {
         if (Prefs.overlay(this)) addOverlay() else removeOverlay()
     }
 
     private fun addOverlay() {
-        if (overlay != null) return
+        if (bar != null) return
         val wm = getSystemService(WINDOW_SERVICE) as WindowManager
-        val d = resources.displayMetrics.density
-        val size = (52 * d).toInt()
-        val tv = TextView(this).apply {
-            text = "▶"
-            textSize = 20f
+        val dm = resources.displayMetrics
+        val d = dm.density
+        fun dp(v: Int) = (v * d).toInt()
+        fun mkBtn(t: String, onClick: () -> Unit) = TextView(this).apply {
+            text = t
+            textSize = 12f
             setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(Color.parseColor("#CC2E7D32"))
-            }
-            alpha = 0.85f
+            setSingleLine(true)
+            background = GradientDrawable().apply { cornerRadius = dp(8).toFloat(); setColor(Color.parseColor("#3A4A42")) }
+            setPadding(dp(4), dp(7), dp(4), dp(7))
+            setOnClickListener { onClick() }
+        }
+        val st = TextView(this).apply {
+            textSize = 11f
+            setTextColor(Color.parseColor("#E8D3A2"))
+            setSingleLine(true)
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            text = "點「開始」啟動"
+            setPadding(dp(2), 0, dp(2), dp(3))
+        }
+        val tb = mkBtn("▶ 開始") { toggle() }
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            fun lp() = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(2), 0, dp(2), 0) }
+            addView(tb, lp())
+            addView(mkBtn("診斷") { runDiag() }, lp())
+            addView(mkBtn("紀錄") { copyLog() }, lp())
+        }
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply { cornerRadius = dp(12).toFloat(); setColor(Color.parseColor("#D91F2A24")) }
+            setPadding(dp(6), dp(5), dp(6), dp(5))
+            addView(st)
+            addView(row)
         }
         val lp = WindowManager.LayoutParams(
-            size, size,
+            (dm.widthPixels * 0.74).toInt(), WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
                 WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = (6 * d).toInt()
-            // 放在畫面最下方的空白處（遊戲道具列下面、主畫面導覽列上面），不遮到棋盤
-            y = (resources.displayMetrics.heightPixels * 0.915).toInt()
-        }
-        var downX = 0f; var downY = 0f; var startX = 0; var startY = 0; var moved = false
-        tv.setOnTouchListener { _: View, e: MotionEvent ->
-            when (e.action) {
-                MotionEvent.ACTION_DOWN -> { downX = e.rawX; downY = e.rawY; startX = lp.x; startY = lp.y; moved = false }
-                MotionEvent.ACTION_MOVE -> {
-                    val dx = e.rawX - downX; val dy = e.rawY - downY
-                    if (Math.abs(dx) > 12 || Math.abs(dy) > 12) moved = true
-                    if (moved) {
-                        lp.x = startX + dx.toInt(); lp.y = startY + dy.toInt(); wm.updateViewLayout(tv, lp)
-                        val sp = statusParams; val sv = statusTv
-                        if (sp != null && sv != null) {
-                            sp.x = lp.x + size + (4 * d).toInt(); sp.y = lp.y + (8 * d).toInt()
-                            try { wm.updateViewLayout(sv, sp) } catch (_: Throwable) {}
-                        }
-                    }
-                }
-                MotionEvent.ACTION_UP -> if (!moved) toggle()
-            }
-            true
+            // 放在畫面最底下一排（遊戲道具列下面、系統手勢列上面），靠右，避開左下角的遊戲暫停鍵
+            gravity = Gravity.BOTTOM or Gravity.END
+            x = dp(6)
+            y = dp(26)
         }
         try {
-            wm.addView(tv, lp)
-            overlay = tv; overlayParams = lp
-            // 狀態小字：貼在按鈕右邊，跟著按鈕一起移動，不攔截觸控
-            val st = TextView(this).apply {
-                textSize = 12f
-                setTextColor(Color.WHITE)
-                maxLines = 2
-                maxWidth = (230 * d).toInt()
-                setPadding((8 * d).toInt(), (4 * d).toInt(), (8 * d).toInt(), (4 * d).toInt())
-                gravity = Gravity.CENTER_VERTICAL
-                background = GradientDrawable().apply { cornerRadius = 10 * d; setColor(Color.parseColor("#B3000000")) }
-                text = if (running) "執行中" else "點 ▶ 開始"
-            }
-            val slp = WindowManager.LayoutParams(
-                WindowManager.LayoutParams.WRAP_CONTENT, (36 * d).toInt(),
-                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-                PixelFormat.TRANSLUCENT
-            ).apply {
-                gravity = Gravity.TOP or Gravity.START
-                x = lp.x + size + (4 * d).toInt()
-                y = lp.y + (8 * d).toInt()
-            }
-            try { wm.addView(st, slp); statusTv = st; statusParams = slp } catch (_: Throwable) {}
+            wm.addView(col, lp)
+            bar = col; toggleBtn = tb; statusTv = st
             updateOverlay()
             updateOverlayVisibility()
         } catch (e: Throwable) {
-            log("懸浮按鈕建立失敗: $e")
+            log("底部按鈕列建立失敗: $e")
         }
     }
 
     private fun removeOverlay() {
-        val tv = overlay ?: return
-        val wm = getSystemService(WINDOW_SERVICE) as WindowManager
-        try { wm.removeView(tv) } catch (_: Throwable) {}
-        statusTv?.let { try { wm.removeView(it) } catch (_: Throwable) {} }
-        statusTv = null; statusParams = null
-        overlay = null
+        val v = bar ?: return
+        try { (getSystemService(WINDOW_SERVICE) as WindowManager).removeView(v) } catch (_: Throwable) {}
+        bar = null; toggleBtn = null; statusTv = null
     }
 
     fun updateOverlayVisibility() {
-        val tv = overlay ?: return
+        val v = bar ?: return
         val show = !isIdleScreen()
-        tv.post {
-            tv.visibility = if (show) View.VISIBLE else View.GONE
-            statusTv?.visibility = if (show) View.VISIBLE else View.GONE
-        }
+        v.post { v.visibility = if (show) View.VISIBLE else View.GONE }
     }
 
     private fun updateOverlay() {
-        val tv = overlay ?: return
-        tv.post {
-            tv.text = if (running) "⏸" else "▶"
-            (tv.background as? GradientDrawable)?.setColor(
-                Color.parseColor(if (running) "#CCC62828" else "#CC2E7D32")
-            )
+        val tb = toggleBtn ?: return
+        tb.post {
+            tb.text = if (running) "⏸ 暫停" else "▶ 開始"
+            (tb.background as? GradientDrawable)?.setColor(Color.parseColor(if (running) "#B23A3A" else "#2E7D32"))
         }
+    }
+
+    // ------------------------------------------------------------ 診斷
+    private fun copyToClipboard(label: String, text: String) {
+        Handler(Looper.getMainLooper()).post {
+            try {
+                (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText(label, text))
+            } catch (e: Throwable) { log("複製失敗: $e") }
+        }
+    }
+
+    private fun copyLog() {
+        val lines = logLines().reversed()
+        copyToClipboard("gecko-log", lines.joinToString("\n"))
+        setStatus("已複製 ${lines.size} 行紀錄")
+    }
+
+    /** 診斷：把「現在的畫面」存成圖片(相簿 Pictures/GeckoBot)，並把辨識報告 + 紀錄複製到剪貼簿。 */
+    private fun runDiag() {
+        setStatus("診斷中…")
+        diagExec.execute {
+            try {
+                val raw = File(cacheDir, "diag.raw")
+                val bmp = screenshot(raw)
+                if (bmp == null) { setStatus("診斷：截圖失敗"); return@execute }
+                val name = "gecko_diag_" + SimpleDateFormat("MMdd_HHmmss", Locale.US).format(Date())
+                val saved = saveToPictures(bmp, name)
+                val rep = try {
+                    Python.getInstance().getModule("brain").callAttr("diagnose", raw.absolutePath, bmp.width, bmp.height).toString()
+                } catch (e: Throwable) { "diagnose 失敗: $e" }
+                bmp.recycle()
+                val text = "== 診斷 $name ==\n$rep\n== 紀錄 ==\n" + logLines().reversed().joinToString("\n")
+                copyToClipboard("gecko-diag", text)
+                log("診斷 $name 截圖存檔=$saved")
+                setStatus(if (saved) "已存截圖 $name 到相簿，診斷已複製" else "診斷已複製（截圖存檔失敗）")
+            } catch (e: Throwable) {
+                setStatus("診斷失敗: ${e.message ?: e}")
+            }
+        }
+    }
+
+    private fun saveToPictures(bmp: Bitmap, name: String): Boolean {
+        return try {
+            val cv = ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, "$name.png")
+                put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+                put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/GeckoBot")
+            }
+            val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cv) ?: return false
+            contentResolver.openOutputStream(uri)?.use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            true
+        } catch (e: Throwable) { log("存截圖失敗: $e"); false }
     }
 }

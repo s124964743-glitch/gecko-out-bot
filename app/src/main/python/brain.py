@@ -104,6 +104,7 @@ class Brain:
             self.banned = set()
             self.pending = None
             self.level_moves = 0
+            self.nosol = 0
             if scr == 'welldone' and self.last_screen != 'welldone':
                 self.levels += 1
             self.same_count = self.same_count + 1 if scr == self.last_screen else 0
@@ -128,11 +129,11 @@ class Brain:
         if b is not None and (geckos or frozen) and holes:
             # 等動畫停下來
             small = cv2.resize(rgb, (w // 8, h // 8), interpolation=cv2.INTER_AREA).astype(np.int16)
-            if self.prev_small is not None and self.settle_wait < 4 and \
+            if self.prev_small is not None and self.settle_wait < 6 and \
                     np.abs(small - self.prev_small).mean() > 1.2:
                 self.prev_small = small
                 self.settle_wait += 1
-                return {"a": "wait", "sleep": 0.5, "msg": "等待動畫停止"}
+                return {"a": "wait", "sleep": 0.25, "msg": "等待動畫停止"}
             self.prev_small = small
             self.settle_wait = 0
             self.unknown = 0
@@ -143,7 +144,12 @@ class Brain:
                 # 手機上 Python 比電腦慢，且大關卡要搜尋比較久，所以給足時間；解出來後會一路照著走
                 # 還沒走第一步時倒數沒開始，可以多想一下；開始倒數後，在動畫中途的畫面上不能浪費時間
                 # （解不出來就放棄、馬上重拍下一張）
-                plan = solver.solve(time_limit=(15.0 if self.level_moves == 0 else 8.0))
+                # 開局解不出來通常是這張截圖剛好在動畫中；先快速放棄、重拍，連續失敗才加長上限
+                if self.level_moves == 0:
+                    lim = (8.0, 15.0, 30.0, 45.0)[min(self.nosol, 3)]
+                else:
+                    lim = 5.0
+                plan = solver.solve(max_repos=(3 if self.nosol < 2 else 5), node_cap=80000, time_limit=lim)
                 if plan and solver.states and len(solver.states) == len(plan):
                     self._plan, self._states, self._idx = plan, solver.states, 0
                 else:
@@ -154,6 +160,7 @@ class Brain:
                 self.nosol += 1
                 return {"a": "wait", "sleep": (1.0 if self.level_moves == 0 else 0.4), "unknown": self.nosol in (1, 4),
                         "msg": f"找不到解（壁虎{len(geckos)} 冰{len(frozen)} 洞{len(holes)}），可能是新機制，已存截圖"}
+            self.nosol = 0
             gi, path, kind = plan[0]
             if getattr(solver, "partial", False):
                 kind += "(部分解)"
@@ -170,7 +177,7 @@ class Brain:
             self.moves += 1
             self.level_moves += 1
             self._remember(b)
-            return {"a": "drag", "pts": pts, "sleep": 1.7,
+            return {"a": "drag", "pts": pts, "sleep": 0.45,
                     "msg": f"第{self.moves}步 {kind} {path[0]}→{path[-1]}"}
 
         # ---- 不認得的畫面（讀取中、廣告…）
@@ -206,3 +213,54 @@ def step(path, w, h):
 
 def stats():
     return json.dumps({"moves": _brain.moves, "levels": _brain.levels})
+
+
+def diagnose(path, w, h):
+    """診斷報告（純文字）：畫面類型、棋盤格線、每隻壁虎/冰/洞的辨識結果、求解結果。
+    不影響目前關卡的快取（暫時換掉格線快取，結束後還原）。"""
+    import time
+    out = []
+    saved = dict(gc.GRID_CACHE)
+    gc.GRID_CACHE.clear()
+    try:
+        raw = np.fromfile(path, np.uint8).reshape(h, w, 4)
+        rgb = np.ascontiguousarray(raw[:, :, :3])
+        out.append(f"解析度 {w}x{h}")
+        scr = popups.classify(rgb)
+        out.append(f"彈窗/畫面類型: {scr}")
+        try:
+            b, geckos, frozen, holes = gc.analyse(rgb, _Args)
+        except Exception as e:
+            out.append(f"analyse 失敗: {e!r}")
+            return "\n".join(out)
+        out.append(f"格線 {b.rows}列x{b.cols}欄 格寬{b.s:.1f}  壁虎{len(geckos)} 冰{len(frozen)} 洞{len(holes)} 冰封洞{dict(b.fhole)}")
+        sym = {'floor': '.', 'gecko': 'G', 'ice': 'I', 'hole': 'O', 'wall': '#', 'void': ' '}
+        for r in range(b.rows):
+            out.append("  %2d " % r + "".join(sym.get(b.cell.get((r, c)), '?') for c in range(b.cols)))
+        for i, g in enumerate(geckos):
+            out.append(f"壁虎{i}: 頭{g['cells'][0]}→尾{g['cells'][-1]} {len(g['cells'])}格 {'雙色' if g.get('two') else ''}"
+                       f" 目標{sorted(g['targets'])} 第二階段{sorted(g['targets2'])} 色{list(map(int, g['color']))}")
+        for i, f in enumerate(frozen):
+            out.append(f"冰{i}: 起點{f['cells'][0]} {len(f['cells'])}格 倒數{f['count']} 目標{sorted(f['targets'])}")
+        out.append("洞: " + " ".join(f"{hh['cell']}{'*' if hh.get('iced') else ''}{list(map(int, hh['color']))}" for hh in holes))
+        t = time.time()
+        solver = gc.Solver(b, geckos, frozen, holes)
+        plan = solver.solve(max_repos=3, node_cap=80000, time_limit=25.0)
+        dt = time.time() - t
+        if plan:
+            out.append(f"求解: 找到 {len(plan)} 步，用時 {dt:.1f}s" + ("（僅部分解）" if getattr(solver, 'partial', False) else ""))
+            for k, (gi, p, kind) in enumerate(plan[:30]):
+                out.append(f"  {k + 1}. 壁虎{gi} {kind} {p[0]}→{p[-1]}")
+        else:
+            out.append(f"求解: 25 秒內找不到解（最少剩 {solver.bestrem[0]} 隻沒進洞）用時 {dt:.1f}s")
+            bs = getattr(solver, 'beststate', None)
+            if bs:
+                st = bs[0]
+                for i, c in enumerate(st[0]):
+                    if c is not None:
+                        out.append(f"  卡住: 壁虎/冰{i} 在 {c[0]}…{c[-1]}")
+    except Exception as e:
+        out.append(f"diagnose 例外: {e!r}")
+    finally:
+        gc.GRID_CACHE.clear(); gc.GRID_CACHE.update(saved)
+    return "\n".join(out)

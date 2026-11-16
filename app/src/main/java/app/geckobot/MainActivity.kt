@@ -64,7 +64,7 @@ class MainActivity : Activity() {
             }
         })
         root.addView(CheckBox(this).apply {
-            text = "顯示畫面上的懸浮開始/暫停按鈕"
+            text = "在遊戲底部顯示控制列（開始/暫停、診斷、紀錄）"
             isChecked = Prefs.overlay(this@MainActivity)
             setOnCheckedChangeListener { _, v ->
                 Prefs.setOverlay(this@MainActivity, v)
@@ -77,7 +77,7 @@ class MainActivity : Activity() {
             setOnCheckedChangeListener { _, v -> Prefs.setJoinEvents(this@MainActivity, v) }
         })
         root.addView(TextView(this).apply {
-            text = "用法：先在最上方選好遊戲，再切到 Gecko Out，畫面下方會出現懸浮按鈕（只在該遊戲裡顯示，主畫面與其他 App 不會出現）；按它即開始/暫停。" +
+            text = "用法：先在最上方選好遊戲，再切到 Gecko Out，畫面最下方會出現一排控制列（只在該遊戲裡顯示）：「開始/暫停」、「診斷」(存下目前畫面到相簿並複製辨識報告)、「紀錄」(複製紀錄)。" +
                 "App 會自動辨識棋盤、拖曳壁虎，過關後自動關閉 Island Quest / Ancient Climb 等彈窗並按 PLAY 進下一關。再按一次即暫停。"
             textSize = 13f
             setPadding(0, pad / 2, 0, pad / 2)
