@@ -78,6 +78,12 @@ def _welldone_fallback(rgb, w, h):
     cyan2 = ((b2[:, 0] < 90) & (b2[:, 1] > 170) & (b2[:, 2] > 200)).mean()
     if yel > 0.15 and cyan2 > 0.25:
         return 'newfeature'
+    # 主畫面的「VERY HARD / HARD Level N」紅色大按鈕（模板只認得一般 PLAY）
+    rb = img[1775:1960, 310:770].reshape(-1, 3).astype(int)
+    red = ((rb[:, 0] > 200) & (rb[:, 1] < 90) & (rb[:, 2] < 100)).mean()
+    sky = np.median(img[5:45, 300:800].reshape(-1, 3).astype(int), 0)
+    if red > 0.30 and sky[0] < 140 and sky[2] > 200:
+        return 'home'
     return None
 
 
