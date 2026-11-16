@@ -916,8 +916,11 @@ class Solver:
             return False
         if i < n:
             lk = self.geckos[i].get("lock")
-            if lk and ("u", lk) not in state[2]:
-                return False      # 上鎖：同色鑰匙壁虎進洞後才能動
+            if lk:
+                need = sum(1 for g in self.geckos if g.get("key") == lk)   # 實機驗證：一把鑰匙不夠，保守起見要全部同色鑰匙壁虎進洞
+                got = sum(1 for u in state[2] if isinstance(u, tuple) and len(u) == 3 and u[0] == "u" and u[1] == lk)
+                if got < need:
+                    return False      # 上鎖
             return True
         return state[1][i - n] is None
 
@@ -973,8 +976,8 @@ class Solver:
     def apply_remove(self, state, i, hole=None, endcfg=None):
         cfgs = list(state[0])
         used = state[2] | ({hole} if hole else set())
-        if i < len(self.geckos) and self.geckos[i].get("key"):
-            used = used | {("u", self.geckos[i]["key"])}      # 鑰匙壁虎進洞 -> 同色鎖解開
+        if i < len(self.geckos) and self.geckos[i].get("key") and not (self.is_phase0(state, i) and endcfg is not None):
+            used = used | {("u", self.geckos[i]["key"], i)}      # 鑰匙壁虎完全進洞 -> 計入解鎖
         if self.is_phase0(state, i) and endcfg is not None:
             cfgs[i] = canon(endcfg)          # 外層進洞後，內層壁虎留在原地繼續
             used = used | {("p", i)}
