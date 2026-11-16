@@ -238,7 +238,7 @@ def diagnose(path, w, h):
         for r in range(b.rows):
             out.append("  %2d " % r + "".join(sym.get(b.cell.get((r, c)), '?') for c in range(b.cols)))
         for i, g in enumerate(geckos):
-            out.append(f"壁虎{i}: 頭{g['cells'][0]}→尾{g['cells'][-1]} {len(g['cells'])}格 {'雙色' if g.get('two') else ''}"
+            out.append(f"壁虎{i}: 頭{g['cells'][0]}→尾{g['cells'][-1]} {len(g['cells'])}格 {'雙色' if g.get('two') else ''}{(' 鎖:' + g['lock']) if g.get('lock') else ''}{(' 鑰匙:' + g['key']) if g.get('key') else ''}"
                        f" 目標{sorted(g['targets'])} 第二階段{sorted(g['targets2'])} 色{list(map(int, g['color']))}")
         for i, f in enumerate(frozen):
             out.append(f"冰{i}: 起點{f['cells'][0]} {len(f['cells'])}格 倒數{f['count']} 目標{sorted(f['targets'])}")

@@ -20,6 +20,7 @@ import cv2
 FLOOR = np.array([135, 160, 184])
 VOID = np.array([215, 227, 235])
 _TPL_B64 = {  # 由實機截圖取樣的數字模板 (24x32)，其餘數字退回 pytesseract
+    '7': "f//+f//+///////////+f//+B//+AAP8AAP8AAP8AAf4AAfwAA/wAB/gAD/gAD/AAH+AAH+AAP8AAP4AAP4AAf4AA/wAA/gAA/gAB/gAB/AAB/AAB/AAB/AAB+AAB+AA",
     '1': "AAB/AAH/AAP/AA//AB//AH//AP//AP//AH//AAB/AAB/AAB/AAB/AAB/AAB/AAB/AAB/AAB/AAB/AAB/AAB/AAB/AAB/AAB+AAAAAAAAAAAAAAAAAAAA8AAA+AAAcAAA",
     '4': "AwAIB+B/D+B/D+B/D+B/D+B/H8B/H8B/H8B/P8B/P4B/P4B/P4B/f4B/fwB/fwB//8D/////////////////////P///AAD/AAB/AAB/AAB/AAB/AAB/AAB/AAB/AAB+",
     '3': "AH8AAf/AB//wD//4H//8H//8P/f8P4D+PwD+HwD+BAD+AAH+AD/8AD/8AD/wAD/4AD/4AD/8AAH+AAD+AAB/fAB//gB/fwB/f4D/f//+P//+P//8H//4D//wA//AAH8A",
@@ -111,22 +112,36 @@ def detect_grid(rgb, force_cols=None, force_rows=None):
         if abs(best[1] - s) / s > 0.025:    # 差距小就沿用原估計（避免相位跳動）
             s = float(best[1])
     # 相位：以洞中心對齊 (洞的黑色中心略偏下)
+    # 垂直格距有時和水平不同（列數多的高棋盤，約差 1~2%，累積 12 列會差 0.2 格）：只用洞的 y 座標單獨估
+    sy = s
+    if len(holes) >= 5:
+        yy_ = np.array([h[0][1] - 0.10 * s for h in holes])
+        if yy_.max() - yy_.min() > 6 * s:
+            def _coh(sc):
+                ang = 2 * np.pi * yy_ / sc
+                return float(np.hypot(np.cos(ang).mean(), np.sin(ang).mean()))
+            cands = np.arange(0.95 * s, 1.035 * s, 0.1)
+            sb = float(cands[int(np.argmax([_coh(c) for c in cands]))])
+            if abs(sb - s) / s > 0.008 and _coh(sb) > _coh(s) + 0.02:
+                sy = sb
     hx = float(np.median([h[0][0] % s for h in holes]))
-    hy = float(np.median([(h[0][1] - 0.10 * s) % s for h in holes]))
+    hy = float(np.median([(h[0][1] - 0.10 * s) % sy for h in holes]))
     # 修正 s：由寬度估 cols
     W = xmax - xmin + 1
     px = (hx - s / 2) % s
-    py = (hy - s / 2) % s
+    py = (hy - sy / 2) % sy
     c0 = int(round((xmin - px) / s)); c1 = int(round((xmax - px) / s))
-    r0 = int(round((ymin - py) / s)); r1 = int(round((ymax - py) / s))
+    r0 = int(round((ymin - py) / sy)); r1 = int(round((ymax - py) / sy))
     cols = force_cols or (c1 - c0)
     rows = force_rows or (r1 - r0)
-    x0_, y0_ = px + c0 * s, py + r0 * s
+    x0_, y0_ = px + c0 * s, py + r0 * sy
     ycen = None
     try:
-        ycen = _perspective_rows(fl, xmin, xmax, ymin, ymax, holes, s, y0_)
+        ycen = _perspective_rows(fl, xmin, xmax, ymin, ymax, holes, sy, y0_)
     except Exception:
         ycen = None
+    if ycen is None and sy != s:
+        ycen = [y0_ + (r + .5) * sy for r in range(rows)]
     if ycen is not None and not force_rows:
         rows = len(ycen)
     return x0_, y0_, s, cols, rows, ycen
@@ -248,6 +263,48 @@ def read_digit(rgb, cx, cy, s):
 GRID_CACHE = {}
 
 
+def _metal(b, rgb, center, s):
+    """鑰匙 / 鎖鏈：銀色(藍白)與金色(黃)像素比例。被鎖鏈蓋住的格子，顏色改取「扣掉金屬」後的身體色，
+    這樣鎖鏈不會把壁虎切成好幾段。"""
+    h = int(.34 * s)
+    b.sil, b.gold = {}, {}
+    fix = {}
+    for cell, k in b.cell.items():
+        if k != "gecko":
+            continue
+        cx, cy = center(*cell)
+        p = rgb[max(0, cy - h):cy + h, max(0, cx - h):cx + h].reshape(-1, 3).astype(int)
+        if len(p) == 0:
+            continue
+        R, G, B = p[:, 0], p[:, 1], p[:, 2]
+        sil = (B >= 232) & (R >= 165) & (R <= 228) & (G >= 195) & (B - R >= 18)
+        gold = (R > 225) & (G > 175) & (G < 240) & (B < 110)
+        b.sil[cell] = float(sil.mean()); b.gold[cell] = float(gold.mean())
+        mx, mn = p.max(1), p.min(1)
+        sat = (mx - mn) > 0.45 * np.maximum(mx, 1)
+        body = sat & (mx > 110)
+        if b.sil[cell] >= 0.03:
+            ok = body & ~sil
+        elif 0.08 <= b.gold[cell] < 0.9 and b.ccol[cell][1] < 190:
+            ok = body & ~gold
+        else:
+            continue
+        if ok.mean() >= 0.25:
+            fix[cell] = np.median(p[ok], 0)
+        else:
+            fix[cell] = None
+    for cell, col in fix.items():
+        if col is not None:
+            b.ccol[cell] = col
+    for cell, col in fix.items():
+        if col is None:       # 幾乎被鎖頭蓋住：借用相鄰（同樣被鎖鏈蓋住或最近）的身體色
+            nb = [(cell[0] + d[0], cell[1] + d[1]) for d in DIRS]
+            nb = [x for x in nb if b.cell.get(x) == "gecko" and fix.get(x, 0) is not None]
+            nb.sort(key=lambda x: (x not in fix))
+            if nb:
+                b.ccol[cell] = b.ccol[nb[0]]
+
+
 def parse(rgb, force_cols=None, force_rows=None):
     if 'g' in GRID_CACHE:
         x0, y0, s, cols, rows, ycen = GRID_CACHE['g']
@@ -298,7 +355,7 @@ def parse(rgb, force_cols=None, force_rows=None):
                 b.hole[(r, c)] = ring_color(rgb, cx, cy, s)
             elif cdist(corners, VOID) < 8 and cdist(m, VOID) < 8:
                 b.cell[(r, c)] = "void"
-            elif corners[2] > 225 and corners[1] > 170 and corners[0] < 150 and cdist(corners, FLOOR) > 25 \
+            elif corners[2] > 210 and corners[1] > 170 and corners[0] < 150 and cdist(corners, FLOOR) > 17 \
                     and cdist(m, FLOOR) > 14 \
                     and (m.min() > 70 or (rgb[cy - cs:cy + cs, cx - cs:cx + cs].min(2) > 225).mean() > 0.12):
                 # (青色外框的壁虎在轉彎處，四角會是青色而被誤認成冰；但它的中心是飽和的黃/青，最小色階很低，
@@ -317,6 +374,7 @@ def parse(rgb, force_cols=None, force_rows=None):
                 b.cell[(r, c)] = "gecko"
                 b.ccol[(r, c)] = m
     b.rgb = rgb
+    _metal(b, rgb, center, s)
     b.fhole = {}
     ICE_ = np.array([40, 214, 253])
 
@@ -446,6 +504,62 @@ def _merge_blink(b, comps):
     return [c for c in comps if c]
 
 
+def _lock_key(b, cells):
+    """回傳 (lock, key)：'silver'/'gold'/None。鎖 = 身上有 >=2 格被鏈條(金屬色)蓋住；鑰匙 = 只有 1 格小面積金屬。"""
+    sil = [b.sil.get(c, 0) for c in cells]
+    gold = [b.gold.get(c, 0) for c in cells]
+    col = np.median([b.ccol[c] for c in cells], 0)
+    if sum(1 for v in sil if v >= 0.10) >= 2:
+        return "silver", None
+    if col[1] < 185:     # 金色只在「非黃色」壁虎上判斷（黃色壁虎本身就是金色）
+        if sum(1 for v in gold if v >= 0.10) >= 2:
+            return "gold", None
+    if any(v >= 0.03 for v in sil):
+        return None, "silver"
+    if col[1] < 185 and any(v >= 0.08 for v in gold):
+        return None, "gold"
+    return None, None
+
+
+def _split_caps(b, comps):
+    """雙色壁虎的頭/尾外框色有時佔 2 格（在彎角）而被併成 2 格的小壁虎：
+    若這個 2 格小塊接在某條 >=3 格壁虎的端點、色相差很大，且那條壁虎的另一端也接著顏色相近的小塊，就拆成單格，
+    交給後面的雙色壁虎邏輯處理。"""
+    def hue_d(c1, c2):
+        return float(np.linalg.norm(lab(c1)[1:] - lab(c2)[1:]))
+    def endpoints(big):
+        cs = set(big)
+        return [c for c in big if sum(1 for d in DIRS if (c[0] + d[0], c[1] + d[1]) in cs) == 1]
+    out = [list(c) for c in comps]
+    for sm in [c for c in out if len(c) == 2]:
+        scol = np.median([b.ccol[c] for c in sm], 0)
+        for big in out:
+            if big is sm or len(big) < 3:
+                continue
+            bcol = np.median([b.ccol[c] for c in big], 0)
+            if hue_d(scol, bcol) < 45:
+                continue
+            eps = endpoints(big)
+            if len(eps) != 2:
+                continue
+            touch = [e for e in eps if any((e[0] + d[0], e[1] + d[1]) in sm for d in DIRS)]
+            if len(touch) != 1:
+                continue
+            other = [e for e in eps if e != touch[0]][0]
+            ok = False
+            for o in out:
+                if o is big or o is sm or len(o) > 2:
+                    continue
+                if any((other[0] + d[0], other[1] + d[1]) in o for d in DIRS) and \
+                        hue_d(np.median([b.ccol[c] for c in o], 0), scol) < 45:
+                    ok = True
+            if ok:
+                out.remove(sm)
+                out.extend([[c] for c in sm])
+                break
+    return out
+
+
 def build_state(b):
     """回傳 dict: geckos(list), holes, static_block, frozen(list)"""
     geckos, frozen = [], []
@@ -454,6 +568,7 @@ def build_state(b):
     def same(u, v):
         return cdist(b.ccol[u], b.ccol[v]) < 22
     comps = _merge_blink(b, components(gcells, same))
+    comps = _split_caps(b, comps)
     singles = [list(c)[0] for c in comps if len(c) == 1]
     big = [c for c in comps if len(c) >= 2]
     taken = set()
@@ -462,7 +577,7 @@ def build_state(b):
     for comp in big:
         body = np.median([b.ccol[c] for c in comp], 0)
         ol = _outline(b, comp)
-        two = ol is not None and cdist(ol, body) > 45
+        two = ol is not None and cdist(ol, body) > 45 and _lock_key(b, comp)[0] is None
         info.append([comp, body, ol, two, [], set()])
     # 補強：外框色沒抓準時，改看「路徑兩端各接一個顏色明顯不同、彼此相近的單格」
     for it in info:
@@ -535,6 +650,7 @@ def build_state(b):
             paths.sort(key=lambda p: -arrow_score(b, p[-1]))
         col = np.median([b.ccol[c] for c in comp], 0).astype(int)
         g = dict(cells=paths[0], color=col)
+        g["lock"], g["key"] = _lock_key(b, list(full))
         if caps:
             g["color_a"] = np.median([b.ccol[c] for c in caps], 0).astype(int)
             g["two"] = True
@@ -799,6 +915,9 @@ class Solver:
         if state[0][i] is None:
             return False
         if i < n:
+            lk = self.geckos[i].get("lock")
+            if lk and ("u", lk) not in state[2]:
+                return False      # 上鎖：同色鑰匙壁虎進洞後才能動
             return True
         return state[1][i - n] is None
 
@@ -854,6 +973,8 @@ class Solver:
     def apply_remove(self, state, i, hole=None, endcfg=None):
         cfgs = list(state[0])
         used = state[2] | ({hole} if hole else set())
+        if i < len(self.geckos) and self.geckos[i].get("key"):
+            used = used | {("u", self.geckos[i]["key"])}      # 鑰匙壁虎進洞 -> 同色鎖解開
         if self.is_phase0(state, i) and endcfg is not None:
             cfgs[i] = canon(endcfg)          # 外層進洞後，內層壁虎留在原地繼續
             used = used | {("p", i)}
