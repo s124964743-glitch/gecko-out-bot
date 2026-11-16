@@ -24,6 +24,8 @@ _TPL_B64 = {  # 由實機截圖取樣的數字模板 (24x32)，其餘數字退�
     '4': "AwAIB+B/D+B/D+B/D+B/D+B/H8B/H8B/H8B/P8B/P4B/P4B/P4B/f4B/fwB/fwB//8D/////////////////////P///AAD/AAB/AAB/AAB/AAB/AAB/AAB/AAB/AAB+",
     '3': "AH8AAf/AB//wD//4H//8H//8P/f8P4D+PwD+HwD+BAD+AAH+AD/8AD/8AD/wAD/4AD/4AD/8AAH+AAD+AAB/fAB//gB/fwB/f4D/f//+P//+P//8H//4D//wA//AAH8A",
     '2': "AHwAA/+AB//AH//gH//wP//4f//8f4P8fwH8/gD+/gD+/gD+/gD+/gH+eAH+AAP8AAf8AB/4AH/wAP/wA//AB/+AH/8AP/wAf/wAf//+////////////////f///P//+",
+    '8': "AH8AA//AB//gD//4H//8P//8P8P+f4H+f4D+fwD+f4D+P8H+P+f8H//4D//4D//4H//8P//+f8H+fwD//wB//wB//wB/fwB/f4D/f+P+P//+H//8H//4B//wA//AADwA",
+    '5': "H//+H//+P//+P//+f//+f//+f+AAf4AAf4AAf4AAf8AAf/4Af//A///w///4///8///+///+PwH/BgD/AAD/AAD/AAD/EAD/fgH////+///+///8///4P//wH//AAf8A",
 }
 import base64
 DIGIT_TPL = {k: np.unpackbits(np.frombuffer(base64.b64decode(v), np.uint8))[:24 * 32].reshape(32, 24).astype(bool)
@@ -119,7 +121,73 @@ def detect_grid(rgb, force_cols=None, force_rows=None):
     r0 = int(round((ymin - py) / s)); r1 = int(round((ymax - py) / s))
     cols = force_cols or (c1 - c0)
     rows = force_rows or (r1 - r0)
-    return px + c0 * s, py + r0 * s, s, cols, rows
+    x0_, y0_ = px + c0 * s, py + r0 * s
+    ycen = None
+    try:
+        ycen = _perspective_rows(fl, xmin, xmax, ymin, ymax, holes, s, y0_)
+    except Exception:
+        ycen = None
+    if ycen is not None and not force_rows:
+        rows = len(ycen)
+    return x0_, y0_, s, cols, rows, ycen
+
+
+def _perspective_rows(fl, xmin, xmax, ymin, ymax, holes, s, y0):
+    """遊戲畫面有輕微透視：越下面的列越高（約 105px → 117px）。列數多的關卡用固定格距會讓
+    上半部整個錯位。這裡用「地板格線」量出每列的真實位置；量不到或固定格距就夠準時回傳 None。"""
+    sub = fl[:, xmin:xmax + 1].sum(1).astype(float)
+    k5 = np.ones(5) / 5.0
+    sm = np.convolve(sub, k5, 'same')
+    base = float(np.median(sm[ymin + 10:ymax - 10])) if ymax - ymin > 40 else 0.0
+    if base <= 0:
+        return None
+    # 從棋盤上緣往下一條一條找格線(局部最小值)，間距需落在 0.8~1.15 格
+    edges = [float(ymin)]
+    pitch = 0.92 * s
+    while True:
+        lo = int(edges[-1] + 0.80 * pitch); hi = int(edges[-1] + 1.20 * pitch)
+        if hi >= ymax - 5 or lo >= len(sm):
+            break
+        seg = sm[lo:hi]
+        j = int(np.argmin(seg))
+        # 必須是明顯的凹谷：比兩側的最大值低，且比一般地板列少很多
+        if seg[j] > 0.80 * base or j in (0, len(seg) - 1):
+            break
+        edges.append(float(lo + j))
+        pitch = edges[-1] - edges[-2]
+    if len(edges) < 5:
+        return None
+    # 固定格距若已經對得上，就沿用舊方法（避免動到已經正常的關卡）
+    err = max(abs(e - (y0 + ((round((e - y0) / s))) * s)) for e in edges)
+    if err < 0.12 * s:
+        return None
+    n_top = len(edges) - 1
+    rr = np.arange(len(edges), dtype=float)
+    # 先用上緣格線擬合 (二次)，外推出洞所在的列，再把洞也納入重新擬合
+    deg = 2 if len(edges) >= 6 else 1
+    ce = np.polyfit(rr, np.array(edges), deg)
+    cen_r = [(r + 0.5, float((np.polyval(ce, r) + np.polyval(ce, r + 1)) / 2)) for r in range(n_top)]
+    pts = list(cen_r)
+    for h in holes:
+        tc = float(h[0][1] - 0.10 * s)
+        best = None
+        for r in range(0, 40):
+            c_ = float((np.polyval(ce, r) + np.polyval(ce, r + 1)) / 2)
+            if best is None or abs(c_ - tc) < best[0]:
+                best = (abs(c_ - tc), r)
+        if best[0] < 0.30 * s:
+            pts.append((best[1] + 0.5, tc))
+    xs_ = np.array([p[0] for p in pts]); ys_ = np.array([p[1] for p in pts])
+    cc = np.polyfit(xs_, ys_, deg)          # 列「中心」隨列號 (r+0.5) 的函數
+    res = np.abs(np.polyval(cc, xs_) - ys_)
+    if res.max() > 0.18 * s:
+        return None
+    # 列數：由棋盤下緣 (最後一列的下邊界) 決定
+    def lower_edge(r):
+        half = (np.polyval(cc, r + 1.5) - np.polyval(cc, r - 0.5)) / 4.0
+        return float(np.polyval(cc, r + 0.5) + half)
+    rows = min(range(1, 40), key=lambda n: abs(lower_edge(n - 1) - ymax))
+    return [float(np.polyval(cc, r + 0.5)) for r in range(rows)]
 
 
 def ring_color(rgb, cx, cy, s, frozen=False, ret_n=False):
@@ -142,11 +210,26 @@ def ring_color(rgb, cx, cy, s, frozen=False, ret_n=False):
     return (np.median(pts, 0), len(pts)) if ret_n else np.median(pts, 0)
 
 
+def _central_white(white, r):
+    """只保留與格子中央重疊的白色連通區（數字本體）；冰霜/反光的白點在邊緣，會被濾掉。"""
+    n, lab_, st, _c = cv2.connectedComponentsWithStats((white > 0).astype(np.uint8), connectivity=8)
+    q = max(3, int(0.45 * r))
+    out = np.zeros_like(white)
+    for i in range(1, n):
+        x, y, w_, h_, a = st[i]
+        if a < 12:
+            continue
+        if x < r + q and x + w_ > r - q and y < r + q and y + h_ > r - q:
+            out[lab_ == i] = 255
+    return out if out.any() else white
+
+
 def read_digit(rgb, cx, cy, s):
     """讀冰塊上的數字 (1~9)。找得到 pytesseract 就用，否則回傳 None (視為未知)。"""
     r = int(s * 0.42)
     crop = rgb[cy - r:cy + r, cx - r:cx + r]
     white = ((crop.min(2) > 225)).astype(np.uint8) * 255
+    white = _central_white(white, r)
     x, y, ww, hh = cv2.boundingRect(white)
     if ww > 4 and hh > 4:
         w = cv2.resize(white[y:y + hh, x:x + ww], (24, 32), interpolation=cv2.INTER_AREA) > 127
@@ -167,10 +250,10 @@ GRID_CACHE = {}
 
 def parse(rgb, force_cols=None, force_rows=None):
     if 'g' in GRID_CACHE:
-        x0, y0, s, cols, rows = GRID_CACHE['g']
+        x0, y0, s, cols, rows, ycen = GRID_CACHE['g']
     else:
-        x0, y0, s, cols, rows = detect_grid(rgb, force_cols, force_rows)
-        GRID_CACHE['g'] = (x0, y0, s, cols, rows)
+        x0, y0, s, cols, rows, ycen = detect_grid(rgb, force_cols, force_rows)
+        GRID_CACHE['g'] = (x0, y0, s, cols, rows, ycen)
     b = Board()
     b.x0, b.y0, b.s, b.cols, b.rows = x0, y0, s, cols, rows
     b.cell = {}   # (r,c) -> kind
@@ -180,6 +263,11 @@ def parse(rgb, force_cols=None, force_rows=None):
     cs = int(0.14 * s)
 
     def center(r, c):
+        if ycen is not None and 0 <= r < len(ycen):
+            return int(x0 + (c + .5) * s), int(ycen[r])
+        if ycen is not None:   # 超出範圍：用最後的格距外推
+            d = (ycen[-1] - ycen[-2]) if len(ycen) > 1 else s
+            return int(x0 + (c + .5) * s), int(ycen[-1] + (r - len(ycen) + 1) * d) if r >= len(ycen) else int(ycen[0] + r * d)
         return int(x0 + (c + .5) * s), int(y0 + (r + .5) * s)
 
     b.center = center
@@ -190,7 +278,11 @@ def parse(rgb, force_cols=None, force_rows=None):
     for i in range(1, nn):
         w_, h_, a_ = st_[i, 2], st_[i, 3], st_[i, 4]
         if 0.40 * s < w_ < 0.66 * s and 0.36 * s < h_ < 0.62 * s and a_ > 0.62 * w_ * h_ and 0.75 < w_ / h_ < 1.4:
-            hc = int((cen_[i][0] - x0) // s); hr = int((cen_[i][1] - 0.10 * s - y0) // s)
+            hc = int((cen_[i][0] - x0) // s)
+            if ycen is not None:
+                hr = int(np.argmin(np.abs(np.array(ycen) - (cen_[i][1] - 0.10 * s))))
+            else:
+                hr = int((cen_[i][1] - 0.10 * s - y0) // s)
             hole_cells.add((hr, hc))
     for r in range(rows):
         for c in range(cols):
@@ -206,7 +298,8 @@ def parse(rgb, force_cols=None, force_rows=None):
                 b.hole[(r, c)] = ring_color(rgb, cx, cy, s)
             elif cdist(corners, VOID) < 8 and cdist(m, VOID) < 8:
                 b.cell[(r, c)] = "void"
-            elif corners[2] > 225 and corners[1] > 170 and corners[0] < 150 and cdist(corners, FLOOR) > 25:
+            elif corners[2] > 225 and corners[1] > 170 and corners[0] < 150 and cdist(corners, FLOOR) > 25 \
+                    and cdist(m, FLOOR) > 14:
                 b.cell[(r, c)] = "ice"
                 white = (rgb[cy - cs:cy + cs, cx - cs:cx + cs].min(2) > 225).mean()
                 if white > 0.12:
@@ -343,9 +436,27 @@ def build_state(b):
         body = np.median([b.ccol[c] for c in comp], 0)
         ol = _outline(b, comp)
         two = ol is not None and cdist(ol, body) > 45
-        info.append([comp, body, ol, two, []])
+        info.append([comp, body, ol, two, [], set()])
+    # 補強：外框色沒抓準時，改看「路徑兩端各接一個顏色明顯不同、彼此相近的單格」
     for it in info:
-        comp, body, ol, two, caps = it
+        comp, body, ol, two = it[0], it[1], it[2], it[3]
+        if two or len(comp) < 2:
+            continue
+        deg = {c: sum(1 for d in DIRS if (c[0] + d[0], c[1] + d[1]) in comp) for c in comp}
+        endpts = [c for c in comp if deg[c] == 1]
+        if len(endpts) != 2:
+            continue
+        found = []
+        for e in endpts:
+            cand = [(e[0] + d[0], e[1] + d[1]) for d in DIRS]
+            cand = [x for x in cand if x in singles and cdist(b.ccol[x], body) > 35]
+            if len(cand) == 1:
+                found.append(cand[0])
+        if len(found) == 2 and found[0] != found[1] and cdist(b.ccol[found[0]], b.ccol[found[1]]) < 40:
+            it[3] = True
+            it[2] = np.median([b.ccol[x] for x in found], 0)
+    for it in info:
+        comp, body, ol, two, caps, extra = it
         if not two:
             continue
         ends = set()
@@ -358,8 +469,24 @@ def build_state(b):
             if (cdist(b.ccol[nb], ol) < 60 or cdist(b.ccol[nb], body) > 60) and len(caps) < 2:
                 caps.append(nb)
         taken.update(caps)
-    for comp, body, ol, two, caps in info:
-        full = set(comp) | set(caps)
+        # 端點在「彎角」時，外框色可能連續佔 2 格：把緊接在端點後、同色的單格併進來，端點改成最外那格
+        new_caps = []
+        for cp in caps:
+            end, chain = cp, []
+            for _ in range(2):
+                nxt = [(end[0] + d[0], end[1] + d[1]) for d in DIRS]
+                nxt = [x for x in nxt if x in singles and x not in taken and x not in chain and x not in comp
+                       and cdist(b.ccol[x], b.ccol[cp]) < 45]
+                if len(nxt) != 1:
+                    break
+                chain.append(nxt[0]); end = nxt[0]; taken.add(end)
+            if chain:
+                extra.update([cp] + chain[:-1]); new_caps.append(chain[-1])
+            else:
+                new_caps.append(cp)
+        caps[:] = new_caps
+    for comp, body, ol, two, caps, extra in info:
+        full = set(comp) | set(caps) | extra
         if len(full) < 2:
             continue
         if caps:
@@ -394,37 +521,68 @@ def build_state(b):
         nd = [c for c in comp if c not in b.digit] or comp
         tint = np.mean([med(b.rgb, *b.center(*c)[:2], int(.15 * b.s)) for c in nd], 0)
         frozen.append(dict(cells=cells, count=b.digit.get(head), color=None, tint=tint))
-    holes = [dict(cell=c, color=col) for c, col in b.hole.items()]
+    holes = [dict(cell=c, color=col, iced=(c in b.fhole)) for c, col in b.hole.items()]
     return geckos, frozen, holes
 
 
 def match_targets(geckos, frozen, holes):
     """每隻壁虎配對同色洞（同色多個洞可互換）。回傳每隻壁虎可進入的洞格集合。"""
     hc = [(h["cell"], h["color"]) for h in holes]
+    iced = {h["cell"] for h in holes if h.get("iced")}
+    ICED_TOL = 32   # 冰封的洞顏色是「扣掉冰色」估出來的，誤差較大，容許度放寬
 
     def tg(col):
         ds = sorted(hc, key=lambda h: cdist(col, h[1]))
         thr = cdist(ds[0][1], col) + 18
-        return {h[0] for h in ds if cdist(h[1], col) <= thr and cdist(h[1], col) < 75}
+        out = {h[0] for h in ds if cdist(h[1], col) <= thr and cdist(h[1], col) < 75}
+        for h in ds:
+            if h[0] in iced and cdist(h[1], col) < ICED_TOL:
+                out.add(h[0])
+        return out
     for g in geckos:
         if g.get("two"):
             g["targets"] = tg(g["color_a"]); g["targets2"] = tg(g["color"])
         else:
             g["targets"] = tg(g["color"]); g["targets2"] = set()
+    # 洞分組：一般洞先依顏色分組；冰封洞（顏色估計較不準）併入「最近的」一般洞組，
+    # 但若離某隻壁虎的顏色更近、就自成一組（例如粉紅冰封洞不該併進紫色組）
+    gcols = []
+    for g in geckos:
+        gcols.append(g["color"])
+        if g.get("color_a") is not None:
+            gcols.append(g["color_a"])
     groups = []
-    for h, col in hc:
+    for h, col in [x for x in hc if x[0] not in iced]:
         for gr in groups:
             if cdist(gr["color"], col) < 20:
                 gr["cells"].add(h); break
         else:
             groups.append(dict(color=col, cells={h}))
+    for h, col in [x for x in hc if x[0] in iced]:
+        dg = [(cdist(gr["color"], col), gr) for gr in groups]
+        dgk = min((cdist(gc_, col) for gc_ in gcols), default=999)
+        best = min(dg, key=lambda t_: t_[0]) if dg else None
+        if best is not None and best[0] < ICED_TOL and best[0] <= dgk + 6:
+            best[1]["cells"].add(h)
+        else:
+            groups.append(dict(color=col, cells={h}))
+    # 同一隻壁虎（同一階段）的目標若跨了好幾組，代表它們其實是同色 -> 合併
+    for g in geckos:
+        for key in ("targets", "targets2"):
+            tset = g[key]
+            hit = [gr for gr in groups if gr["cells"] & tset]
+            if len(hit) > 1:
+                keep = hit[0]
+                for gr in hit[1:]:
+                    keep["cells"] |= gr["cells"]; groups.remove(gr)
     need = {id(gr): len(gr["cells"]) for gr in groups}
     for g in geckos:
         for key in ("targets", "targets2"):
             if g[key]:
                 for gr in groups:
-                    if next(iter(g[key])) in gr["cells"]:
+                    if g[key] & gr["cells"]:
                         need[id(gr)] -= 1
+                        break
     ICE = np.array([40, 214, 253])
     pairs = []
     for fi, f in enumerate(frozen):
@@ -646,13 +804,14 @@ class Solver:
         def key(st):
             return st
 
-        def dfs(st, repos_left, plan):
+        def dfs(st, repos_left, plan, sts):
             nodes[0] += 1
             rem = sum(1 for c in st[0] if c is not None) + sum(1 for g_ in self.geckos if False)
             if rem < self.bestrem[0]:
                 self.bestrem[0] = rem
+                self.beststate = (st, list(plan))
             if done(st):
-                return plan
+                return (plan, sts)
             if nodes[0] > node_cap or time.time() > t_end:
                 return None
             if (st, repos_left) in seen:
@@ -665,12 +824,12 @@ class Solver:
                     # 一般壁虎進洞一律是好事（只會讓出空間）；取第一個
                     i, path, ec = normal[0]
                     ns = self.apply_remove(st, i, path[-1], ec)
-                    r = dfs(ns, seg[0], plan + [(i, path, "goal")])
+                    r = dfs(ns, seg[0], plan + [(i, path, "goal")], sts + [ns])
                     return r
                 # 雙色壁虎的外層進洞：壁虎還留在場上，要分支嘗試
                 for i, path, ec in gl:
                     ns = self.apply_remove(st, i, path[-1], ec)
-                    r = dfs(ns, seg[0], plan + [(i, path, "goal")])
+                    r = dfs(ns, seg[0], plan + [(i, path, "goal")], sts + [ns])
                     if r is not None:
                         return r
             if repos_left == 0:
@@ -729,18 +888,20 @@ class Solver:
                     (good if self.goto_hole(ns) else other).append((L, i, c, prev, ns))
             good.sort(key=lambda t_: t_[0]); other.sort(key=lambda t_: t_[0]); foc.sort(key=lambda t_: t_[0])
             for L, i, c, prev, ns in good + foc + (other[:20] if repos_left > 1 else []):
-                r = dfs(ns, repos_left - 1, plan + [(i, self.head_path(prev, c), "repos")])
+                r = dfs(ns, repos_left - 1, plan + [(i, self.head_path(prev, c), "repos")], sts + [ns])
                 if r is not None:
                     return r
             return None
 
         self.partial = False
+        self.states = []
         self.bestrem = [99]
         for rl in range(0, max_repos + 1):
             seen.clear(); nodes[0] = 0; seg[0] = rl
-            r = dfs(init, rl, [])
+            r = dfs(init, rl, [], [])
             if r is not None:
-                return r
+                self.states = r[1]
+                return r[0]
         # 找不到完整解（例如有尚未支援的機制）：至少做「現在就能進洞」的安全步驟
         gl = self.goto_hole(init)
         if gl:

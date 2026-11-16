@@ -14,6 +14,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityWindowInfo
 import android.widget.TextView
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
@@ -61,6 +62,7 @@ class GeckoService : AccessibilityService() {
     private var overlayParams: WindowManager.LayoutParams? = null
     private var unknownSaved = 0
     @Volatile private var fgPkg: String? = null
+    @Volatile private var lastGameMs = 0L
     private val launchers: Set<String> by lazy {
         try {
             packageManager.queryIntentActivities(
@@ -80,9 +82,25 @@ class GeckoService : AccessibilityService() {
         } catch (_: Throwable) { null }
     }
 
+    /** 即時查詢「最上層的應用程式視窗」是哪個 App（比只靠視窗事件可靠，回到桌面立刻知道）。 */
+    private fun livePkg(): String? {
+        try {
+            var best: AccessibilityWindowInfo? = null
+            for (w in windows) {
+                if (w.type != AccessibilityWindowInfo.TYPE_APPLICATION) continue
+                if (best == null || w.layer > best.layer) best = w
+            }
+            val p = best?.root?.packageName?.toString()
+            if (p != null) return p
+        } catch (_: Throwable) {}
+        return try { rootInActiveWindow?.packageName?.toString() } catch (_: Throwable) { null }
+    }
+
     private fun inGame(): Boolean {
         val g = gamePkg() ?: return false
-        return fgPkg == g
+        // 以即時查詢為準；查不到才退回事件記錄。只要查得到而不是遊戲，就一律視為不在遊戲裡。
+        val now = livePkg() ?: fgPkg
+        return now == g
     }
 
     /** 不在遊戲裡就不操作、不顯示懸浮按鈕 */
@@ -101,6 +119,10 @@ class GeckoService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event?.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED) {
+            updateOverlayVisibility()
+            return
+        }
         if (event?.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
         val p = event.packageName?.toString() ?: return
         // 本 App 只有 MainActivity 才算「在本 App 裡」；懸浮按鈕自己的視窗事件要忽略
@@ -108,7 +130,8 @@ class GeckoService : AccessibilityService() {
             if (event.className?.toString()?.endsWith("MainActivity") != true) return
         }
         // 系統介面、輸入法、ROG 遊戲工具列(Game Genie)等浮動視窗不代表「目前的 App」
-        if (p == "com.android.systemui" || p.contains("inputmethod") || p.startsWith("com.asus")) return
+        // （ROG 桌面的套件名也是 com.asus.launcher，不能一概略過，否則回到桌面時會以為還在遊戲裡）
+        if (p == "com.android.systemui" || p.contains("inputmethod") || (p.startsWith("com.asus") && p !in launchers)) return
         fgPkg = p
         updateOverlayVisibility()
     }
@@ -130,6 +153,7 @@ class GeckoService : AccessibilityService() {
     private fun start() {
         if (running) return
         running = true
+        lastGameMs = System.currentTimeMillis()   // 給 60 秒緩衝，讓使用者從本 App 按開始後切到遊戲
         updateOverlay()
         worker = Thread { loop() }.also { it.isDaemon = true; it.start() }
         log("開始")
@@ -153,20 +177,34 @@ class GeckoService : AccessibilityService() {
         }
         var fails = 0
         var idleLogged = false
-        var foreign = 0
+        var backs = 0
+        var idleSince = 0L
         while (running) {
             try {
                 if (isIdleScreen()) {
-                    if (!idleLogged) { log("目前不在 Gecko Out，暫停操作，回到遊戲後自動繼續"); idleLogged = true }
-                    val f = fgPkg
-                    if (f != null && f != packageName && f !in launchers && f != "com.google.android.apps.nexuslauncher") {
-                        foreign++
-                        if (foreign >= 6) { foreign = 0; performGlobalAction(GLOBAL_ACTION_BACK) }
-                    } else foreign = 0
+                    val nowMs = System.currentTimeMillis()
+                    if (!idleLogged) {
+                        log("目前不在 Gecko Out，暫停操作，回到遊戲後自動繼續")
+                        idleLogged = true; idleSince = nowMs
+                    }
+                    // 只有「剛從遊戲跳出去」(例如廣告開了別的 App) 才幫忙按返回，最多 3 次；
+                    // 使用者自己回桌面或開別的 App，一律不碰。
+                    val f = livePkg() ?: fgPkg
+                    if (nowMs - lastGameMs < 15000 && backs < 3 &&
+                        f != null && f != packageName && f !in launchers && f != "com.android.systemui") {
+                        if (nowMs - idleSince > 4000) { backs++; idleSince = nowMs; performGlobalAction(GLOBAL_ACTION_BACK) }
+                    }
+                    // 離開遊戲超過 60 秒就自動停止，避免忘了關、之後亂操作
+                    if (nowMs - lastGameMs > 60000) {
+                        log("離開遊戲超過 60 秒，已自動停止（回到遊戲後再按懸浮按鈕開始）")
+                        running = false
+                        break
+                    }
                     Thread.sleep(1000)
                     continue
                 }
-                foreign = 0
+                lastGameMs = System.currentTimeMillis()
+                backs = 0
                 idleLogged = false
                 val bmp = screenshot(rawFile)
                 if (bmp == null) {
@@ -182,6 +220,8 @@ class GeckoService : AccessibilityService() {
                 if (msg.isNotEmpty()) log(msg)
                 if (j.optBoolean("unknown")) saveUnknown(bmp)
                 bmp.recycle()
+                // 解題/辨識可能花好幾秒；送手勢前再確認一次還在遊戲裡，否則整個動作丟掉
+                if (!inGame()) { log("已離開遊戲，取消這次操作"); continue }
                 when (j.getString("a")) {
                     "tap" -> gesture(listOf(j.getInt("x") to j.getInt("y")), 60)
                     "drag" -> {

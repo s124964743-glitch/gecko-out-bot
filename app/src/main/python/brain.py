@@ -34,12 +34,59 @@ class Brain:
         self.levels = 0
         self.nosol = 0
         self.banned = set()
+        self.pending = None      # (plan, states, idx, before_occ, after_occ)：上一步送出的動作
 
     def configure(self, join_events):
         popups.JOIN_EVENTS = bool(join_events)
         self.join_events = bool(join_events)
 
     # ------------------------------------------------------------
+    @staticmethod
+    def _occ_obs(b):
+        return frozenset(c for c, k in b.cell.items() if k in ("gecko", "ice"))
+
+    @staticmethod
+    def _occ_state(st):
+        occ = set()
+        for cfg in st[0]:
+            if cfg is not None:
+                occ.update(cfg)
+        return frozenset(occ)
+
+    def _remember(self, b):
+        """記下剛送出的這一步，下次截圖用來確認「畫面是否如預期」。"""
+        plan = getattr(self, "_plan", None)
+        if not plan:
+            self.pending = None
+            return
+        idx = self._idx
+        before = self._occ_obs(b)
+        after = self._occ_state(self._states[idx])
+        self.pending = (idx, before, after)
+
+    def _next_cached(self, b):
+        """若上一步的結果符合預期，直接取已解好的下一步；否則回傳 None（重新求解）。"""
+        pend = self.pending
+        plan = getattr(self, "_plan", None)
+        if not pend or not plan:
+            return None
+        idx, before, after = pend
+        obs = self._occ_obs(b)
+        if obs == after:
+            nxt = idx + 1
+            if nxt >= len(plan):
+                self._plan = None
+                return None
+            gi, path, kind = plan[nxt]
+            self._idx = nxt
+            return plan[nxt]
+        if obs == before and idx < len(plan):
+            # 手勢沒生效（畫面沒變）：同一步再試一次
+            self._idx = idx
+            return plan[idx]
+        self._plan = None
+        return None
+
     def step(self, path, w, h):
         raw = np.fromfile(path, np.uint8).reshape(h, w, 4)
         rgb = np.ascontiguousarray(raw[:, :, :3])
@@ -54,6 +101,7 @@ class Brain:
             self.prev_small = None
             self.last_move = None
             self.banned = set()
+            self.pending = None
             if scr == 'welldone' and self.last_screen != 'welldone':
                 self.levels += 1
             self.same_count = self.same_count + 1 if scr == self.last_screen else 0
@@ -88,7 +136,16 @@ class Brain:
             self.unknown = 0
             solver = gc.Solver(b, geckos, frozen, holes)
             solver.banned = self.banned
-            plan = solver.solve()
+            plan = self._next_cached(b)
+            if plan is None:
+                # 手機上 Python 比電腦慢，且大關卡要搜尋比較久，所以給足時間；解出來後會一路照著走
+                plan = solver.solve(time_limit=40.0)
+                if plan and solver.states and len(solver.states) == len(plan):
+                    self._plan, self._states, self._idx = plan, solver.states, 0
+                else:
+                    self._plan = None
+            else:
+                plan = [plan]
             if not plan:
                 self.nosol += 1
                 return {"a": "wait", "sleep": 1.5, "unknown": self.nosol in (1, 4),
@@ -107,6 +164,7 @@ class Brain:
                 return {"a": "wait", "sleep": 0.8, "unknown": True,
                         "msg": f"同一步拖了 3 次沒反應，先跳過起點 {path[0]}（可能有鎖/鑰匙等新機制）"}
             self.moves += 1
+            self._remember(b)
             return {"a": "drag", "pts": pts, "sleep": 1.7,
                     "msg": f"第{self.moves}步 {kind} {path[0]}→{path[-1]}"}
 
