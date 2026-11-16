@@ -623,7 +623,67 @@ class Solver:
         self.banned = set()   # 已證實拖了沒反應的起點格，不再嘗試
         self.fl = sorted(getattr(b, "fhole", {}).items())   # 冰封的洞 [(cell, count)]
 
+    def any_goto(self, state):
+        """有沒有任何壁虎現在能直接進洞？(只回答是/否，找到就立刻返回，比 goto_hole 快很多)"""
+        for i, cfg in enumerate(state[0]):
+            if not self.mobile(state, i):
+                continue
+            blocked = self.blocked(state, i)
+            targets = self.all_targets(i, state)
+            for ori in (tuple(cfg), tuple(cfg)[::-1]):
+                if self._reaches(ori, blocked, targets, state[2]):
+                    return True
+        return False
+
+    def _flood_ok(self, head, blocked, targets, used):
+        """粗篩：把壁虎當成一個點，從頭部走得到目標洞嗎？走不到就一定進不去（不必做昂貴的整條身體搜尋）。"""
+        seen = {head}
+        st = [head]
+        while st:
+            cr, cc = st.pop()
+            for d in DIRS:
+                n = (cr + d[0], cc + d[1])
+                if n in seen or n not in self.floorlike or n in blocked:
+                    continue
+                if n in targets and n not in used:
+                    return True
+                if n in self.holes and n not in used:
+                    continue
+                seen.add(n); st.append(n)
+        return False
+
+    def _reaches(self, cfg, blocked, targets, used):
+        if not self._flood_ok(tuple(cfg)[0], blocked, targets, used):
+            return False
+        start = tuple(cfg)
+        seen = {start}
+        dq = deque([start])
+        while dq:
+            cur = dq.popleft()
+            head = cur[0]
+            for d in DIRS:
+                n = (head[0] + d[0], head[1] + d[1])
+                if n not in self.floorlike or n in blocked:
+                    continue
+                if n in targets and n not in used:
+                    return True
+                if n in self.holes and n not in used:
+                    continue
+                if n in cur[:-1]:
+                    continue
+                nxt = (n,) + cur[:-1]
+                if nxt in seen:
+                    continue
+                seen.add(nxt)
+                if len(seen) > 4000:
+                    break
+                dq.append(nxt)
+        return False
+
     def moves_bfs(self, cfg, blocked, targets, used=frozenset(), maxn=4000):
+        return self._moves_bfs(cfg, blocked, targets, used, maxn)
+
+    def _moves_bfs(self, cfg, blocked, targets, used=frozenset(), maxn=4000):
         """單隻壁虎 BFS。回傳 (到洞的最短頭部路徑 or None, {config: 頭部路徑})"""
         start = tuple(cfg)
         prev = {start: None}
@@ -885,7 +945,7 @@ class Solver:
                 if kf in focus:
                     foc.append((L, i, c, prev, ns))
                 else:
-                    (good if self.goto_hole(ns) else other).append((L, i, c, prev, ns))
+                    (good if self.any_goto(ns) else other).append((L, i, c, prev, ns))
             good.sort(key=lambda t_: t_[0]); other.sort(key=lambda t_: t_[0]); foc.sort(key=lambda t_: t_[0])
             for L, i, c, prev, ns in good + foc + (other[:20] if repos_left > 1 else []):
                 r = dfs(ns, repos_left - 1, plan + [(i, self.head_path(prev, c), "repos")], sts + [ns])

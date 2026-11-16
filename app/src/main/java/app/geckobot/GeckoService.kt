@@ -60,6 +60,8 @@ class GeckoService : AccessibilityService() {
     private val exec = Executors.newSingleThreadExecutor()
     private var overlay: TextView? = null
     private var overlayParams: WindowManager.LayoutParams? = null
+    private var statusTv: TextView? = null
+    private var statusParams: WindowManager.LayoutParams? = null
     private var unknownSaved = 0
     @Volatile private var fgPkg: String? = null
     @Volatile private var lastGameMs = 0L
@@ -145,6 +147,12 @@ class GeckoService : AccessibilityService() {
         super.onDestroy()
     }
 
+    // ------------------------------------------------------------ 狀態提示（懸浮按鈕旁的小字）
+    fun setStatus(t: String) {
+        val tv = statusTv ?: return
+        tv.post { tv.text = t }
+    }
+
     // ------------------------------------------------------------ 開關
     fun toggle() {
         if (running) stop() else start()
@@ -156,12 +164,14 @@ class GeckoService : AccessibilityService() {
         lastGameMs = System.currentTimeMillis()   // 給 60 秒緩衝，讓使用者從本 App 按開始後切到遊戲
         updateOverlay()
         worker = Thread { loop() }.also { it.isDaemon = true; it.start() }
+        setStatus("開始…")
         log("開始")
     }
 
     private fun stop() {
         running = false
         updateOverlay()
+        setStatus("已暫停")
         log("暫停")
     }
 
@@ -185,6 +195,7 @@ class GeckoService : AccessibilityService() {
                     val nowMs = System.currentTimeMillis()
                     if (!idleLogged) {
                         log("目前不在 Gecko Out，暫停操作，回到遊戲後自動繼續")
+                        setStatus("不在遊戲裡，暫停操作")
                         idleLogged = true; idleSince = nowMs
                     }
                     // 只有「剛從遊戲跳出去」(例如廣告開了別的 App) 才幫忙按返回，最多 3 次；
@@ -210,14 +221,18 @@ class GeckoService : AccessibilityService() {
                 if (bmp == null) {
                     fails++
                     if (fails % 10 == 1) log("截圖失敗(${fails})，稍後重試")
+                    setStatus("截圖失敗($fails)，重試中")
                     Thread.sleep(600)
                     continue
                 }
                 fails = 0
+                setStatus("辨識/思考中…（大關卡要幾秒）")
+                val t0 = System.currentTimeMillis()
                 val res = brain.callAttr("step", rawFile.absolutePath, bmp.width, bmp.height).toString()
+                val dt = System.currentTimeMillis() - t0
                 val j = JSONObject(res)
                 val msg = j.optString("msg")
-                if (msg.isNotEmpty()) log(msg)
+                if (msg.isNotEmpty()) { log(msg); setStatus(msg + (if (dt > 1500) "  (思考 ${dt / 1000}s)" else "")) }
                 if (j.optBoolean("unknown")) saveUnknown(bmp)
                 bmp.recycle()
                 // 解題/辨識可能花好幾秒；送手勢前再確認一次還在遊戲裡，否則整個動作丟掉
@@ -240,6 +255,7 @@ class GeckoService : AccessibilityService() {
                 break
             } catch (e: Throwable) {
                 log("錯誤: ${e.message ?: e}")
+                setStatus("錯誤: ${e.message ?: e}")
                 try { Thread.sleep(1500) } catch (_: InterruptedException) {}
             }
         }
@@ -349,7 +365,14 @@ class GeckoService : AccessibilityService() {
                 MotionEvent.ACTION_MOVE -> {
                     val dx = e.rawX - downX; val dy = e.rawY - downY
                     if (Math.abs(dx) > 12 || Math.abs(dy) > 12) moved = true
-                    if (moved) { lp.x = startX + dx.toInt(); lp.y = startY + dy.toInt(); wm.updateViewLayout(tv, lp) }
+                    if (moved) {
+                        lp.x = startX + dx.toInt(); lp.y = startY + dy.toInt(); wm.updateViewLayout(tv, lp)
+                        val sp = statusParams; val sv = statusTv
+                        if (sp != null && sv != null) {
+                            sp.x = lp.x + size + (4 * d).toInt(); sp.y = lp.y + (8 * d).toInt()
+                            try { wm.updateViewLayout(sv, sp) } catch (_: Throwable) {}
+                        }
+                    }
                 }
                 MotionEvent.ACTION_UP -> if (!moved) toggle()
             }
@@ -358,6 +381,29 @@ class GeckoService : AccessibilityService() {
         try {
             wm.addView(tv, lp)
             overlay = tv; overlayParams = lp
+            // 狀態小字：貼在按鈕右邊，跟著按鈕一起移動，不攔截觸控
+            val st = TextView(this).apply {
+                textSize = 12f
+                setTextColor(Color.WHITE)
+                maxLines = 2
+                maxWidth = (230 * d).toInt()
+                setPadding((8 * d).toInt(), (4 * d).toInt(), (8 * d).toInt(), (4 * d).toInt())
+                gravity = Gravity.CENTER_VERTICAL
+                background = GradientDrawable().apply { cornerRadius = 10 * d; setColor(Color.parseColor("#B3000000")) }
+                text = if (running) "執行中" else "點 ▶ 開始"
+            }
+            val slp = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT, (36 * d).toInt(),
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+                x = lp.x + size + (4 * d).toInt()
+                y = lp.y + (8 * d).toInt()
+            }
+            try { wm.addView(st, slp); statusTv = st; statusParams = slp } catch (_: Throwable) {}
             updateOverlay()
             updateOverlayVisibility()
         } catch (e: Throwable) {
@@ -367,14 +413,20 @@ class GeckoService : AccessibilityService() {
 
     private fun removeOverlay() {
         val tv = overlay ?: return
-        try { (getSystemService(WINDOW_SERVICE) as WindowManager).removeView(tv) } catch (_: Throwable) {}
+        val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+        try { wm.removeView(tv) } catch (_: Throwable) {}
+        statusTv?.let { try { wm.removeView(it) } catch (_: Throwable) {} }
+        statusTv = null; statusParams = null
         overlay = null
     }
 
     fun updateOverlayVisibility() {
         val tv = overlay ?: return
         val show = !isIdleScreen()
-        tv.post { tv.visibility = if (show) View.VISIBLE else View.GONE }
+        tv.post {
+            tv.visibility = if (show) View.VISIBLE else View.GONE
+            statusTv?.visibility = if (show) View.VISIBLE else View.GONE
+        }
     }
 
     private fun updateOverlay() {
