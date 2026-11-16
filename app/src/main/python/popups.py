@@ -58,6 +58,19 @@ def classify(rgb):
         return max(others, key=others.get)
     if 'home' in hit and scores.get('searching', 0) < 0.5:
         return 'home'
+    return _welldone_fallback(rgb, w, h)
+
+
+def _welldone_fallback(rgb, w, h):
+    """模板比對失敗時（結算畫面動畫中/有「New Feature」進度條等變體）用顏色判斷：
+    上方有大片橘黃色「WELL DONE!」字，下方有青色「40」按鈕。"""
+    img = rgb if (w, h) == (REF_W, REF_H) else cv2.resize(rgb, (REF_W, REF_H), interpolation=cv2.INTER_AREA)
+    t = img[630:770, 40:1020].reshape(-1, 3).astype(int)
+    orange = ((t[:, 0] > 230) & (t[:, 1] > 150) & (t[:, 1] < 235) & (t[:, 2] < 110)).mean()
+    b = img[1560:1710, 360:720].reshape(-1, 3).astype(int)
+    cyan = ((b[:, 0] < 90) & (b[:, 1] > 170) & (b[:, 2] > 200)).mean()
+    if orange > 0.25 and cyan > 0.25:
+        return 'welldone'
     return None
 
 
