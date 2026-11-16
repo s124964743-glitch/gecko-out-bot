@@ -35,6 +35,7 @@ class Brain:
         self.nosol = 0
         self.banned = set()
         self.pending = None      # (plan, states, idx, before_occ, after_occ)：上一步送出的動作
+        self.level_moves = 0     # 這一關已經送出幾步（0 = 倒數還沒開始）
 
     def configure(self, join_events):
         popups.JOIN_EVENTS = bool(join_events)
@@ -102,6 +103,7 @@ class Brain:
             self.last_move = None
             self.banned = set()
             self.pending = None
+            self.level_moves = 0
             if scr == 'welldone' and self.last_screen != 'welldone':
                 self.levels += 1
             self.same_count = self.same_count + 1 if scr == self.last_screen else 0
@@ -139,7 +141,9 @@ class Brain:
             plan = self._next_cached(b)
             if plan is None:
                 # 手機上 Python 比電腦慢，且大關卡要搜尋比較久，所以給足時間；解出來後會一路照著走
-                plan = solver.solve(time_limit=40.0)
+                # 還沒走第一步時倒數沒開始，可以多想一下；開始倒數後，在動畫中途的畫面上不能浪費時間
+                # （解不出來就放棄、馬上重拍下一張）
+                plan = solver.solve(time_limit=(15.0 if self.level_moves == 0 else 8.0))
                 if plan and solver.states and len(solver.states) == len(plan):
                     self._plan, self._states, self._idx = plan, solver.states, 0
                 else:
@@ -148,7 +152,7 @@ class Brain:
                 plan = [plan]
             if not plan:
                 self.nosol += 1
-                return {"a": "wait", "sleep": 1.5, "unknown": self.nosol in (1, 4),
+                return {"a": "wait", "sleep": (1.0 if self.level_moves == 0 else 0.4), "unknown": self.nosol in (1, 4),
                         "msg": f"找不到解（壁虎{len(geckos)} 冰{len(frozen)} 洞{len(holes)}），可能是新機制，已存截圖"}
             gi, path, kind = plan[0]
             if getattr(solver, "partial", False):
@@ -164,6 +168,7 @@ class Brain:
                 return {"a": "wait", "sleep": 0.8, "unknown": True,
                         "msg": f"同一步拖了 3 次沒反應，先跳過起點 {path[0]}（可能有鎖/鑰匙等新機制）"}
             self.moves += 1
+            self.level_moves += 1
             self._remember(b)
             return {"a": "drag", "pts": pts, "sleep": 1.7,
                     "msg": f"第{self.moves}步 {kind} {path[0]}→{path[-1]}"}
@@ -173,6 +178,10 @@ class Brain:
         self.prev_small = None
         n = self.unknown
         msg = f"未知畫面 {n}"
+        if self.level_moves > 0:
+            # 關卡進行中（已經走過棋）看不懂畫面，多半是動畫或辨識暫時失敗：只等、不亂點。
+            # （左上角是遊戲的暫停鍵，盲點會跳出 Settings 選單）
+            return {"a": "wait", "sleep": 0.5, "unknown": n in (3, 12), "msg": msg + "（關卡中，只等待）"}
         if n in (10, 20, 30):
             return {"a": "back", "sleep": 1.0, "msg": msg + "：按返回鍵", "unknown": True}
         if n in (14, 24, 34):

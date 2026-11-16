@@ -299,7 +299,10 @@ def parse(rgb, force_cols=None, force_rows=None):
             elif cdist(corners, VOID) < 8 and cdist(m, VOID) < 8:
                 b.cell[(r, c)] = "void"
             elif corners[2] > 225 and corners[1] > 170 and corners[0] < 150 and cdist(corners, FLOOR) > 25 \
-                    and cdist(m, FLOOR) > 14:
+                    and cdist(m, FLOOR) > 14 \
+                    and (m.min() > 70 or (rgb[cy - cs:cy + cs, cx - cs:cx + cs].min(2) > 225).mean() > 0.12):
+                # (青色外框的壁虎在轉彎處，四角會是青色而被誤認成冰；但它的中心是飽和的黃/青，最小色階很低，
+                #  冰格的中心則是淡色或有白色數字)
                 b.cell[(r, c)] = "ice"
                 white = (rgb[cy - cs:cy + cs, cx - cs:cx + cs].min(2) > 225).mean()
                 if white > 0.12:
@@ -598,7 +601,8 @@ def match_targets(geckos, frozen, holes):
             if len(hit) > 1:
                 keep = hit[0]
                 for gr in hit[1:]:
-                    keep["cells"] |= gr["cells"]; groups.remove(gr)
+                    keep["cells"] |= gr["cells"]
+                    groups[:] = [x for x in groups if x is not gr]   # 用身分比較（字典裡有 numpy 陣列，不能用 ==）
     need = {id(gr): len(gr["cells"]) for gr in groups}
     for g in geckos:
         for key in ("targets", "targets2"):
