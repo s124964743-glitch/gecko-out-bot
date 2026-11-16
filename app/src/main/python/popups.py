@@ -83,3 +83,23 @@ def action_for(name):
 
 def scale_pos(pos, w, h):
     return int(pos[0] * w / REF_W), int(pos[1] * h / REF_H)
+
+
+def tutorial_target(rgb, w, h):
+    """新手教學遮罩：整個畫面被壓暗，只有要點的按鈕保持鮮豔明亮。回傳該按鈕中心 (x, y)（實際解析度），沒有教學遮罩則 None。"""
+    img = rgb if (w, h) == (REF_W, REF_H) else cv2.resize(rgb, (REF_W, REF_H), interpolation=cv2.INTER_AREA)
+    hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
+    V, S = hsv[..., 2], hsv[..., 1]
+    if np.median(V[:2100]) > 100:
+        return None
+    m = ((V > 215) & (S > 110)).astype(np.uint8)
+    m[2100:] = 0
+    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((15, 15), np.uint8))
+    n, _l, st, cen = cv2.connectedComponentsWithStats(m)
+    best = None
+    for i in range(1, n):
+        if st[i, 4] > 3000 and (best is None or st[i, 4] > st[best, 4]):
+            best = i
+    if best is None:
+        return None
+    return scale_pos((float(cen[best][0]), float(cen[best][1])), w, h)

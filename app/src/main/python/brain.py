@@ -116,6 +116,11 @@ class Brain:
                 # 點了好幾次畫面還沒換 -> 改按返回鍵
                 self.same_count = 0
                 return {"a": "back", "sleep": 1.2, "msg": f"[{scr}] 卡住，按返回鍵"}
+            if scr == 'home':
+                tt = popups.tutorial_target(rgb, w, h)
+                if tt:     # 新手教學遮罩擋住 PLAY：改點被亮起的按鈕
+                    return {"a": "tap", "x": int(tt[0]), "y": int(tt[1]), "sleep": 1.3,
+                            "msg": f"[教學遮罩] 點亮起的按鈕 ({int(tt[0])},{int(tt[1])})"}
             x, y = popups.scale_pos(pos, w, h)
             return {"a": "tap", "x": x, "y": y, "sleep": 1.3, "msg": f"[{scr}] 點 ({x},{y})"}
         self.last_screen = None
