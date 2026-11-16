@@ -249,7 +249,15 @@ class GeckoService : AccessibilityService() {
                     "drag" -> {
                         val arr = j.getJSONArray("pts")
                         val pts = (0 until arr.length()).map { arr.getJSONArray(it).let { p -> p.getInt(0) to p.getInt(1) } }
-                        gesture(pts, ((pts.size - 1) * 50L + 100L).coerceAtMost(900L))   // 壁虎滑很快：每格約 50ms，整條拖曳最多 0.9 秒
+                        // 長路徑分段：每段最多 14 個點、每格約 60ms；每段結束就放開，下一段從壁虎頭部（上一段終點）重新按下
+                        var s = 0
+                        while (s < pts.size - 1) {
+                            val e = minOf(s + 13, pts.size - 1)
+                            val seg = pts.subList(s, e + 1)
+                            gesture(seg, ((seg.size - 1) * 60L + 100L))
+                            s = e
+                            if (s < pts.size - 1) Thread.sleep(90)
+                        }
                     }
                     "back" -> performGlobalAction(GLOBAL_ACTION_BACK)
                 }
