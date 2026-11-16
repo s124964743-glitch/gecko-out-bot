@@ -250,7 +250,7 @@ def diagnose(path, w, h):
         out.append("洞: " + " ".join(f"{hh['cell']}{'*' if hh.get('iced') else ''}{list(map(int, hh['color']))}" for hh in holes))
         t = time.time()
         solver = gc.Solver(b, geckos, frozen, holes)
-        plan = solver.solve(max_repos=3, node_cap=80000, time_limit=25.0)
+        plan = solver.solve(max_repos=3, node_cap=80000, time_limit=10.0)
         dt = time.time() - t
         if plan:
             out.append(f"求解: 找到 {len(plan)} 步，用時 {dt:.1f}s" + ("（僅部分解）" if getattr(solver, 'partial', False) else ""))

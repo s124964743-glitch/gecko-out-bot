@@ -872,6 +872,15 @@ class Solver:
 
     def any_goto(self, state):
         """有沒有任何壁虎現在能直接進洞？(只回答是/否，找到就立刻返回，比 goto_hole 快很多)"""
+        c = getattr(self, "_agc", None)
+        if c is None:
+            c = self._agc = {}
+        r = c.get(state)
+        if r is None:
+            r = c[state] = self._any_goto(state)
+        return r
+
+    def _any_goto(self, state):
         for i, cfg in enumerate(state[0]):
             if not self.mobile(state, i):
                 continue
@@ -1194,15 +1203,21 @@ class Solver:
                     ks.sort()
                     for _L, kf in ks[:14]:
                         focus.add(kf)
-            good, other, foc = [], [], []
-            for kf, (L, i, c, prev) in uniq.items():
+            other, foc = [], []
+            items = sorted(uniq.items(), key=lambda kv: kv[1][0])
+            # 惰性評估：依移動距離由短到長，「移完後有壁虎能進洞」的立刻往下搜，找到解就不必評估其餘候選
+            for kf, (L, i, c, prev) in items:
                 ns = self.apply_reposition(st, i, c)
                 if kf in focus:
                     foc.append((L, i, c, prev, ns))
+                    continue
+                if self.any_goto(ns):
+                    r = dfs(ns, repos_left - 1, plan + [(i, self.head_path(prev, c), "repos")], sts + [ns])
+                    if r is not None:
+                        return r
                 else:
-                    (good if self.any_goto(ns) else other).append((L, i, c, prev, ns))
-            good.sort(key=lambda t_: t_[0]); other.sort(key=lambda t_: t_[0]); foc.sort(key=lambda t_: t_[0])
-            for L, i, c, prev, ns in good + foc + (other[:20] if repos_left > 1 else []):
+                    other.append((L, i, c, prev, ns))
+            for L, i, c, prev, ns in foc + (other[:20] if repos_left > 1 else []):
                 r = dfs(ns, repos_left - 1, plan + [(i, self.head_path(prev, c), "repos")], sts + [ns])
                 if r is not None:
                     return r
@@ -1211,6 +1226,7 @@ class Solver:
         self.partial = False
         self.states = []
         self.bestrem = [99]
+        self._agc = {}
         for rl in range(0, max_repos + 1):
             seen.clear(); nodes[0] = 0; seg[0] = rl
             r = dfs(init, rl, [], [])
