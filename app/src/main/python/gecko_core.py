@@ -925,7 +925,7 @@ class Solver:
                     return True
                 if n in self.holes and n not in used:
                     continue
-                if n in cur[:-1]:
+                if n in cur:
                     continue
                 nxt = (n,) + cur[:-1]
                 if nxt in seen:
@@ -960,7 +960,7 @@ class Solver:
                     continue
                 if n in self.holes and n not in used:
                     continue
-                if n in cur[:-1]:
+                if n in cur:
                     continue
                 nxt = (n,) + cur[:-1]
                 if nxt in prev:
