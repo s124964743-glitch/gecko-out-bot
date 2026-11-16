@@ -243,6 +243,7 @@ class GeckoService : AccessibilityService() {
                 if (j.optBoolean("unknown")) saveUnknown(bmp)
                 bmp.recycle()
                 // 解題/辨識可能花好幾秒；送手勢前再確認一次還在遊戲裡，否則整個動作丟掉
+                if (!running) { log("已暫停，取消這次操作"); break }
                 if (!inGame()) { log("已離開遊戲，取消這次操作"); continue }
                 when (j.getString("a")) {
                     "tap" -> gesture(listOf(j.getInt("x") to j.getInt("y")), 60)
@@ -254,6 +255,7 @@ class GeckoService : AccessibilityService() {
                         while (s < pts.size - 1) {
                             val e = minOf(s + 13, pts.size - 1)
                             val seg = pts.subList(s, e + 1)
+                            if (!running) break
                             gesture(seg, ((seg.size - 1) * 60L + 100L))
                             s = e
                             if (s < pts.size - 1) Thread.sleep(90)

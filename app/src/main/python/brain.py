@@ -246,8 +246,8 @@ def diagnose(path, w, h):
         except Exception as e:
             out.append(f"analyse 失敗: {e!r}")
             return "\n".join(out)
-        out.append(f"格線 {b.rows}列x{b.cols}欄 格寬{b.s:.1f}  壁虎{len(geckos)} 冰{len(frozen)} 洞{len(holes)} 冰封洞{dict(b.fhole)}")
-        sym = {'floor': '.', 'gecko': 'G', 'ice': 'I', 'hole': 'O', 'wall': '#', 'void': ' '}
+        out.append(f"格線 {b.rows}列x{b.cols}欄 格寬{b.s:.1f}  壁虎{len(geckos)} 冰{len(frozen)} 洞{len(holes)} 冰封洞{dict(b.fhole)} 石牆{dict(b.stone)}")
+        sym = {'floor': '.', 'gecko': 'G', 'ice': 'I', 'hole': 'O', 'wall': '#', 'void': ' ', 'stone': 'S'}
         for r in range(b.rows):
             out.append("  %2d " % r + "".join(sym.get(b.cell.get((r, c)), '?') for c in range(b.cols)))
         for i, g in enumerate(geckos):

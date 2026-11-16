@@ -355,6 +355,7 @@ def parse(rgb, force_cols=None, force_rows=None):
     b.ccol = {}   # (r,c) -> rgb
     b.hole = {}   # (r,c) -> rgb ring color
     b.digit = {}  # (r,c) -> 數字 or None
+    b.stone = {}
     cs = int(0.14 * s)
 
     def center(r, c):
@@ -402,6 +403,10 @@ def parse(rgb, force_cols=None, force_rows=None):
                 white = (rgb[cy - cs:cy + cs, cx - cs:cx + cs].min(2) > 225).mean()
                 if white > 0.12:
                     b.digit[(r, c)] = read_digit(rgb, cx, cy, s)
+            elif int(m.max() - m.min()) < 30 and 120 < m.mean() < 215 \
+                    and (rgb[cy - cs:cy + cs, cx - cs:cx + cs].min(2) > 225).mean() > 0.08:
+                b.cell[(r, c)] = "stone"          # 石牆：灰色方塊＋白色數字，N 隻壁虎進洞後碎掉
+                b.stone[(r, c)] = read_digit(rgb, cx, cy, s)
             elif m.min() > 235 and cdist(corners, FLOOR) > 25:
                 b.cell[(r, c)] = "wall"
             elif cdist(m, FLOOR) < 9:
@@ -910,12 +915,13 @@ DW = 0.0
 class Solver:
     def __init__(self, b, geckos, frozen, holes):
         self.b = b
-        self.floorlike = {c for c, k in b.cell.items() if k in ("floor", "gecko", "ice", "hole")}
+        self.floorlike = {c for c, k in b.cell.items() if k in ("floor", "gecko", "ice", "hole", "stone")}
         self.holes = {h["cell"] for h in holes}
         self.geckos = geckos
         self.frozen = frozen
         self.banned = set()   # 已證實拖了沒反應的起點格，不再嘗試
-        self.fl = sorted(getattr(b, "fhole", {}).items())   # 冰封的洞 [(cell, count)]
+        self.fl = sorted(list(getattr(b, "fhole", {}).items()) + list(getattr(b, "stone", {}).items()),
+                         key=lambda kv: kv[0])   # 冰封的洞＋石牆 [(cell, count)]
 
     def any_goto(self, state):
         """有沒有任何壁虎現在能直接進洞？(只回答是/否，找到就立刻返回，比 goto_hole 快很多)"""
