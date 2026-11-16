@@ -1163,6 +1163,8 @@ class Solver:
             for i, cfg in enumerate(st[0]):
                 if not self.mobile(st, i):
                     continue
+                if time.time() > t_end:
+                    return None
                 for ori in (tuple(cfg), tuple(cfg)[::-1]):
                     goal, prev = self.moves_bfs(ori, self.blocked(st, i), set(), st[2])
                     for c in prev:
@@ -1207,6 +1209,8 @@ class Solver:
             items = sorted(uniq.items(), key=lambda kv: kv[1][0])
             # 惰性評估：依移動距離由短到長，「移完後有壁虎能進洞」的立刻往下搜，找到解就不必評估其餘候選
             for kf, (L, i, c, prev) in items:
+                if time.time() > t_end:
+                    return None
                 ns = self.apply_reposition(st, i, c)
                 if kf in focus:
                     foc.append((L, i, c, prev, ns))

@@ -40,6 +40,14 @@ class Brain:
     def configure(self, join_events):
         popups.JOIN_EVENTS = bool(join_events)
         self.join_events = bool(join_events)
+        # 每次按「開始」都當作新的開始：清掉上一輪的關卡進度/計畫（否則會沿用「已走過棋」的短時限）
+        self.level_moves = 0
+        self.nosol = 0
+        self._plan = None
+        self.pending = None
+        self.prev_small = None
+        self.banned = set()
+        gc.GRID_CACHE.clear()
 
     # ------------------------------------------------------------
     @staticmethod
@@ -151,9 +159,9 @@ class Brain:
                 # （解不出來就放棄、馬上重拍下一張）
                 # 開局解不出來通常是這張截圖剛好在動畫中；先快速放棄、重拍，連續失敗才加長上限
                 if self.level_moves == 0:
-                    lim = (20.0, 30.0, 45.0, 60.0)[min(self.nosol, 3)]
+                    lim = (25.0, 40.0, 60.0, 60.0)[min(self.nosol, 3)]
                 else:
-                    lim = 5.0
+                    lim = 12.0
                 plan = solver.solve(max_repos=(3 if self.nosol < 2 else 5), node_cap=80000, time_limit=lim)
                 if plan and solver.states and len(solver.states) == len(plan):
                     self._plan, self._states, self._idx = plan, solver.states, 0
