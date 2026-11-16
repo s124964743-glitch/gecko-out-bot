@@ -20,6 +20,7 @@ import cv2
 FLOOR = np.array([135, 160, 184])
 VOID = np.array([215, 227, 235])
 _TPL_B64 = {  # 由實機截圖取樣的數字模板 (24x32)，其餘數字退回 pytesseract
+    '10': "AABABgHwDwP4Hwf8Hwf8Pw/8fw/+fw8+/x8e/x4f/x4P/x4Pbx4PDx4PDx4PD34PD/4PD/4PD/4PD14PDx4PDx4PDx4PDx4eDx8eDw/+Dw/+Dw/8Dwf8Dwf4BwP4BgHw",
     '6': "AAP8AD/+AH/+Af/+A//+B//8D/+AH/wAH/AAP+AAP8AAP4AAf4AAf/8Af//gf//4f//4///8///+/4H+/wD//wD/fwD/fwD/f4D+f8P+P//+H//8H//4D//wA//AAH4A",
     '7': "f//+f//+///////////+f//+B//+AAP8AAP8AAP8AAf4AAfwAA/wAB/gAD/gAD/AAH+AAH+AAP8AAP4AAP4AAf4AA/wAA/gAA/gAB/gAB/AAB/AAB/AAB/AAB+AAB+AA",
     '1': "AAB/AAH/AAP/AA//AB//AH//AP//AP//AH//AAB/AAB/AAB/AAB/AAB/AAB/AAB/AAB/AAB/AAB/AAB/AAB/AAB/AAB/AAB+AAAAAAAAAAAAAAAAAAAA8AAA+AAAcAAA",
@@ -534,7 +535,7 @@ def _merge_blink(b, comps):
                     # 只比色相(Lab 的 a,b)：眨眼只會變暗，色相差約 15；雙色壁虎的外框色色相差 >= 43
                     la = lab(b.ccol[cell]); lb = lab(np.median([b.ccol[c] for c in big], 0))
                     dist = float(np.linalg.norm(la[1:] - lb[1:]))
-                    if dist < 24 and (best is None or dist < best[0]):
+                    if dist < 30 and (best is None or dist < best[0]):
                         best = (dist, big)
         if best:
             best[1].append(cell); sc.clear()
@@ -655,6 +656,46 @@ def _linked(b, u, v):
     return gap < 2
 
 
+def _triples(b, comps):
+    """身體只有 1 格的雙色壁虎：單格內層色 X，兩側各接一小塊（<=2 格）顏色相近的外框色。
+    回傳 (剩下的 comps, 組好的壁虎 dict 清單)。"""
+    def hue_d(c1, c2):
+        return float(np.linalg.norm(lab(c1)[1:] - lab(c2)[1:]))
+    comps = [list(c) for c in comps]
+    out = []
+    used = set()
+    for X in [c for c in comps if len(c) == 1]:
+        if id(X) in used:
+            continue
+        x = X[0]
+        xcol = b.ccol[x]
+        nb = []
+        for A in comps:
+            if A is X or id(A) in used or len(A) > 2:
+                continue
+            adj = [c for c in A if abs(c[0] - x[0]) + abs(c[1] - x[1]) == 1]
+            if len(adj) != 1:
+                continue
+            acol = np.median([b.ccol[c] for c in A], 0)
+            if hue_d(acol, xcol) > 45:
+                nb.append((A, adj[0], acol))
+        if len(nb) != 2 or hue_d(nb[0][2], nb[1][2]) > 30:
+            continue
+        # 兩塊必須在 X 的相對兩側（直線）或各在一側
+        (A, a_adj, ca), (B, b_adj, cb) = nb
+        if a_adj == b_adj:
+            continue
+        pa = ([c for c in A if c != a_adj] + [a_adj])
+        pb = [b_adj] + [c for c in B if c != b_adj]
+        cells = tuple(pa + [x] + pb)
+        g = dict(cells=cells, color=np.array(xcol).astype(int), two=True,
+                 color_a=np.median([b.ccol[c] for c in A + B], 0).astype(int))
+        g["lock"], g["key"] = _lock_key(b, list(cells))
+        out.append(g)
+        used.update({id(X), id(A), id(B)})
+    return [c for c in comps if id(c) not in used], out
+
+
 def build_state(b):
     """回傳 dict: geckos(list), holes, static_block, frozen(list)"""
     geckos, frozen = [], []
@@ -665,6 +706,7 @@ def build_state(b):
     comps = _split_locked(b, components(gcells, same), same)
     comps = _merge_blink(b, comps)
     comps = _split_caps(b, comps)
+    comps, tri = _triples(b, comps)
     singles = [list(c)[0] for c in comps if len(c) == 1]
     big = [c for c in comps if len(c) >= 2]
     taken = set()
@@ -758,6 +800,7 @@ def build_state(b):
                 if g["lock"] == "gold": g["lock"] = None
                 if g["key"] == "gold": g["key"] = None
         geckos.append(g)
+    geckos.extend(tri)
     icec = [c for c, k in b.cell.items() if k == "ice"]
     for comp in components(icec, lambda u, v: True):
         dig = [c for c in comp if c in b.digit]
@@ -858,6 +901,10 @@ DIRS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 def canon(cfg):
     cfg = tuple(cfg)
     return min(cfg, cfg[::-1])
+
+
+CAND_N = 30
+DW = 0.0
 
 
 class Solver:
@@ -1109,6 +1156,107 @@ class Solver:
                 pass
         return state
 
+
+    def solve_bf(self, t_end, node_cap=200000):
+        """最佳優先搜尋：依「剩餘壁虎數＋能不能直接進洞」排序，全域去重；
+        連續兩次移動同一隻沒意義(一次 BFS 就能到任何位置)，所以略過。"""
+        import heapq
+        init = list(self.initial())
+        n = len(self.geckos)
+        cfgs = list(init[0])
+        for k, f in enumerate(self.frozen):
+            cfgs[n + k] = canon(f["cells"])
+        init = (tuple(cfgs), init[1], init[2])
+
+        def settle(st):
+            steps = []
+            while True:
+                gl = self.goto_hole(st)
+                normal = [x for x in gl if not self.is_phase0(st, x[0])]
+                if not normal:
+                    return st, steps, gl
+                i, path, ec = normal[0]
+                st = self.apply_remove(st, i, path[-1], ec)
+                steps.append((i, path, "goal", st))
+
+        def rem(st):
+            r = 0.0
+            for i, c in enumerate(st[0]):
+                if c is None:
+                    continue
+                r += 1.0
+                if self.is_phase0(st, i):
+                    r += 0.5
+            return r
+
+        seen = set()
+        heap = []
+        cnt = itertools.count()
+        nodes = []        # (parent, steps)
+        st0, steps0, gl0 = settle(init)
+        nodes.append((None, steps0))
+        heapq.heappush(heap, (rem(st0) * 10, next(cnt), st0, gl0, 0, -1, 0))
+        seen.add(st0)
+        expanded = 0
+        while heap:
+            if time.time() > t_end or expanded > node_cap:
+                return None
+            _p, _c, st, gl, nid, last, depth = heapq.heappop(heap)
+            expanded += 1
+            if all(c is None for c in st[0]):
+                out, ids = [], []
+                while nid is not None:
+                    ids.append(nid); nid = nodes[nid][0]
+                plan, sts = [], []
+                for k in reversed(ids):
+                    for i, path, kind, s_ in nodes[k][1]:
+                        plan.append((i, path, kind)); sts.append(s_)
+                self.states = sts
+                self.bf_stats = (expanded, len(nodes))
+                return plan
+            r0 = rem(st)
+            children = []
+            for i, path, ec in gl:          # 雙色壁虎外層進洞
+                if not self.is_phase0(st, i):
+                    continue
+                ns = self.apply_remove(st, i, path[-1], ec)
+                children.append((r0 * 10 - 5, ns, [(i, path, "goal", ns)], -1))
+            for i, cfg in enumerate(st[0]):
+                if i == last or not self.mobile(st, i):
+                    continue
+                if time.time() > t_end:
+                    return None
+                best = {}
+                for ori in (tuple(cfg), tuple(cfg)[::-1]):
+                    goal, prev = self.moves_bfs(ori, self.blocked(st, i), set(), st[2])
+                    for c in prev:
+                        kc = canon(c)
+                        if kc == canon(cfg):
+                            continue
+                        L = 0; x = c
+                        while x is not None:
+                            x = prev[x]; L += 1
+                        if kc not in best or L < best[kc][0]:
+                            best[kc] = (L, c, prev)
+                for kc, (L, c, prev) in sorted(best.items(), key=lambda kv: kv[1][0])[:CAND_N]:
+                    ns = self.apply_reposition(st, i, kc)
+                    if ns in seen:
+                        continue
+                    pr = r0 * 10 + (0 if self.any_goto(ns) else 4) + depth * DW + L * 0.03
+                    children.append((pr, ns, [(i, self.head_path(prev, c), "repos", ns)], i))
+            for pr, ns, steps, lm in children:
+                if self.any_goto(ns):
+                    st2, st_steps, gl2 = settle(ns)
+                else:
+                    st2, st_steps, gl2 = ns, [], []
+                if st2 in seen:
+                    continue
+                seen.add(st2)
+                nodes.append((nid, steps + st_steps))
+                heapq.heappush(heap, (pr - (rem(st) - rem(st2)) * 10 + 0.0, next(cnt), st2, gl2,
+                                      len(nodes) - 1, lm, depth + (1 if lm >= 0 else 0)))
+        return None
+
     def solve(self, max_repos=3, node_cap=20000, time_limit=8.0):
         """回傳第一步的動作序列 [(idx, head_path, kind)]，kind='goal'/'repos'。"""
         n = len(self.geckos)
@@ -1120,7 +1268,8 @@ class Solver:
         seen = set()
         nodes = [0]
         seg = [0]    # 每一段(兩次進洞之間)可用的移位次數
-        t_end = time.time() + time_limit
+        t_start = time.time()
+        t_end = t_start + time_limit * 0.4
 
         def done(st):
             return all(c is None for c in st[0])
@@ -1231,12 +1380,20 @@ class Solver:
         self.states = []
         self.bestrem = [99]
         self._agc = {}
+        p = self.solve_bf(t_start + time_limit * 0.1)      # 先用最佳優先搜尋試一小段
+        if p:
+            return p
+        t_end = time.time() + time_limit * 0.4
         for rl in range(0, max_repos + 1):
             seen.clear(); nodes[0] = 0; seg[0] = rl
             r = dfs(init, rl, [], [])
             if r is not None:
                 self.states = r[1]
                 return r[0]
+        if time.time() < t_start + time_limit:
+            p = self.solve_bf(t_start + time_limit)
+            if p:
+                return p
         # 找不到完整解（例如有尚未支援的機制）：至少做「現在就能進洞」的安全步驟
         gl = self.goto_hole(init)
         if gl:
