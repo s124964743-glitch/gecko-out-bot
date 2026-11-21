@@ -36,12 +36,14 @@ class Brain:
         self.banned = set()
         self.pending = None      # (plan, states, idx, before_occ, after_occ)：上一步送出的動作
         self.level_moves = 0     # 這一關已經送出幾步（0 = 倒數還沒開始）
+        self.froze = False       # 這一關是否已經用過「凍結時間」道具
 
     def configure(self, join_events):
         popups.JOIN_EVENTS = bool(join_events)
         self.join_events = bool(join_events)
         # 每次按「開始」都當作新的開始：清掉上一輪的關卡進度/計畫（否則會沿用「已走過棋」的短時限）
         self.level_moves = 0
+        self.froze = False
         self.nosol = 0
         self._plan = None
         self.pending = None
@@ -112,6 +114,7 @@ class Brain:
             self.banned = set()
             self.pending = None
             self.level_moves = 0
+            self.froze = False
             self.nosol = 0
             if scr == 'welldone' and self.last_screen != 'welldone':
                 self.levels += 1
@@ -150,6 +153,13 @@ class Brain:
             self.prev_small = small
             self.settle_wait = 0
             self.unknown = 0
+            if self.level_moves >= 1 and not self.froze:
+                # 第一步走出去後倒數才開始 -> 立刻用中間那顆「凍結時間」道具暫停倒計時
+                self.froze = True
+                bd = rgb[int(h * 0.8445):int(h * 0.8650), int(w * 0.528):int(w * 0.572)].reshape(-1, 3).astype(int)
+                if ((bd[:, 1] > 150) & (bd[:, 0] < 140) & (bd[:, 2] < 120)).mean() > 0.15:   # 徽章是綠色＝還有數量
+                    x, y = popups.scale_pos((540, 2040), w, h)
+                    return {"a": "tap", "x": x, "y": y, "sleep": 0.8, "msg": f"[凍結時間] 點道具 ({x},{y})"}
             solver = gc.Solver(b, geckos, frozen, holes)
             solver.banned = self.banned
             plan = self._next_cached(b)
