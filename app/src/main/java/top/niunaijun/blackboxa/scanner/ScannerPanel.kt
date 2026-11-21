@@ -116,6 +116,9 @@ class ScannerPanel(
             btn("解全鎖") { unlockAll() },
             btn("刷新") { refreshList() }
         ))
+        addView(row(btn("復原上一步") {
+            if (MemEngine.undo()) refreshList() else status("沒有可復原的步驟")
+        }))
         addView(row(btn("引擎自檢（驗證本進程可讀寫）") { runBg("自檢中") { note = MemEngine.selfTest() } }))
         addView(list)
         refreshList()
@@ -194,7 +197,13 @@ class ScannerPanel(
                 return
             }
         }
-        runBg("篩選中") { MemEngine.refine(op, m) }
+        runBg("篩選中") {
+            val before = MemEngine.count
+            val n = MemEngine.refine(op, m)
+            if (n == 0 && MemEngine.undo()) {
+                note = "篩選後 0 筆，已自動復原上一組（$before 筆）。請換個條件再搜"
+            }
+        }
     }
 
     private fun writeAll(freeze: Boolean) {

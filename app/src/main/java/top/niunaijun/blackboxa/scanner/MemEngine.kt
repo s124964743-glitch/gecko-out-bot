@@ -57,7 +57,11 @@ fun VType.exact(text: String): Matcher? {
     val v = parse(text) ?: return null
     if (!isFloat) return Matcher { it == v }
     val d = num(v)
-    return Matcher { abs(num(it) - d) <= 0.001 }
+    // 浮點「精確」其實是容許誤差：沒打小數點 = ±1（畫面上的秒數是四捨五入的），有小數 = 最後一位的一半
+    val t = text.trim()
+    val dot = t.indexOf('.')
+    val tol = if (dot < 0) 1.0 else maxOf(1e-4, 0.5 * Math.pow(10.0, -(t.length - dot - 1).toDouble()))
+    return Matcher { abs(num(it) - d) <= tol }
 }
 
 fun VType.range(a: String, b: String): Matcher? {
@@ -110,6 +114,22 @@ object MemEngine {
 
     @Volatile
     var statFail = 0
+
+    private var bAddrs: LongArray? = null
+    private var bVals: LongArray? = null
+    private var bCount = 0
+
+    /** 復原上一次「再搜」。 */
+    fun undo(): Boolean {
+        val a = bAddrs ?: return false
+        val v = bVals ?: return false
+        addrs = a.copyOf(maxOf(1024, a.size))
+        vals = v.copyOf(maxOf(1024, v.size))
+        count = bCount
+        bAddrs = null
+        bVals = null
+        return true
+    }
 
     val frozen = ConcurrentHashMap<Long, Pair<VType, Long>>()
 
@@ -243,6 +263,9 @@ object MemEngine {
 
     /** 在現有結果中再次篩選。 */
     fun refine(op: Op, m: Matcher?): Int {
+        bAddrs = addrs.copyOf(count)
+        bVals = vals.copyOf(count)
+        bCount = count
         val t = type
         val size = t.size
         val page = ByteArray(8192)
