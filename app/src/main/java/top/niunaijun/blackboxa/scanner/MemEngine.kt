@@ -44,6 +44,13 @@ enum class VType(val label: String, val size: Int) {
         }
     }
 
+    fun fromNum(d: Double): Long = when (this) {
+        I32 -> d.toLong().toInt().toLong()
+        I64 -> d.toLong()
+        F32 -> java.lang.Float.floatToRawIntBits(d.toFloat()).toLong()
+        F64 -> java.lang.Double.doubleToRawLongBits(d)
+    }
+
     fun next(): VType = values()[(ordinal + 1) % values().size]
 }
 
@@ -307,6 +314,66 @@ object MemEngine {
         }
         count = w
         return w
+    }
+
+    /** 自動縮小：每隔一段時間做一次「變小」，把不會倒數的值（常數、設定值）濾掉。 */
+    fun autoShrink(times: Int, intervalMs: Long, onStep: (Int, Int) -> Unit): Int {
+        for (i in 1..times) {
+            try {
+                Thread.sleep(intervalMs)
+            } catch (e: InterruptedException) {
+                break
+            }
+            val n = refine(Op.DEC, null)
+            if (n == 0) {
+                undo()
+                onStep(i, count)
+                break
+            }
+            onStep(i, n)
+            if (n <= 3) break
+        }
+        return count
+    }
+
+    /**
+     * 探測「真正的計時器」：對每個候選加上 delta，等一下再讀。
+     * 真計時器會從我們寫入的值繼續倒數；畫面副本則會被遊戲立刻覆蓋回原本的值。
+     */
+    fun probeTimer(delta: Double): String {
+        val t = type
+        val n = count
+        if (n == 0) return "沒有候選結果"
+        if (n > 60) return "候選還有 $n 筆，直接寫入不安全，請先再縮小到 60 筆以內"
+        val addr = addrs.copyOf(n)
+        val old = LongArray(n)
+        val target = LongArray(n)
+        for (i in 0 until n) {
+            old[i] = peek(addr[i], t) ?: 0L
+            target[i] = t.fromNum(t.num(old[i]) + delta)
+            write(addr[i], t, target[i])
+        }
+        try {
+            Thread.sleep(450)
+        } catch (e: InterruptedException) {
+        }
+        val liveA = ArrayList<Long>()
+        val liveV = ArrayList<Long>()
+        for (i in 0 until n) {
+            val cur = peek(addr[i], t) ?: continue
+            val c = t.num(cur)
+            val w = t.num(target[i])
+            if (cur != target[i] && Math.abs(c - w) < 3.0) {
+                liveA.add(addr[i]); liveV.add(cur)       // 從寫入值繼續變動 = 真計時器
+            } else if (cur == target[i]) {
+                write(addr[i], t, old[i])                // 完全沒動：不是計時器，還原
+            }
+        }
+        if (liveA.isEmpty()) return "候選中沒有找到真正的計時器（可能不是這個類型，或存的是結束時間）"
+        addrs = LongArray(maxOf(1024, liveA.size)).also { a -> liveA.forEachIndexed { k, v -> a[k] = v } }
+        vals = LongArray(maxOf(1024, liveA.size)).also { a -> liveV.forEachIndexed { k, v -> a[k] = v } }
+        count = liveA.size
+        return "找到 ${liveA.size} 個真計時器，已加 ${delta} 秒。要固定時間請填新值後按「全鎖」"
     }
 
     fun peek(addr: Long, t: VType): Long? {

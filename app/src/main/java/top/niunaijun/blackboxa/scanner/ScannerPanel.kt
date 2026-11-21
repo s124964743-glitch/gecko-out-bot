@@ -141,6 +141,11 @@ class ScannerPanel(
             btn("解全鎖") { unlockAll() },
             btn("刷新") { refreshList() }
         ))
+        addView(row(
+            btn("自動縮小") { autoShrink() },
+            btn("探測計時器+秒") { probe() }
+        ))
+        addView(row(btn("一鍵找計時器（填目前秒數範圍）") { findTimer() }))
         addView(row(btn("復原上一步") {
             if (MemEngine.undo()) refreshList() else status("沒有可復原的步驟")
         }))
@@ -228,6 +233,45 @@ class ScannerPanel(
             if (n == 0 && MemEngine.undo()) {
                 note = "篩選後 0 筆，已自動復原上一組（$before 筆）。請換個條件再搜"
             }
+        }
+    }
+
+    private fun autoShrink() {
+        if (MemEngine.count == 0) {
+            status("請先「新搜尋」")
+            return
+        }
+        runBg("自動縮小中（請讓計時保持進行）") {
+            val n = MemEngine.autoShrink(6, 1200) { i, c -> post { status("自動縮小 $i/6：剩 $c 筆") } }
+            note = "自動縮小完成：剩 $n 筆"
+        }
+    }
+
+    private fun probe() {
+        val d = etNew.text.toString().toDoubleOrNull() ?: 60.0
+        runBg("探測中") { note = MemEngine.probeTimer(d) }
+    }
+
+    private fun findTimer() {
+        val t = MemEngine.type
+        if (!t.isFloat) {
+            status("請先把類型切成「浮點4B」")
+            return
+        }
+        val m = t.range(etV.text.toString(), etV2.text.toString())
+        if (m == null) {
+            status("請在「數值」填目前畫面秒數的下限、「範圍上限」填上限（例如 57 與 59）")
+            return
+        }
+        val delta = etNew.text.toString().toDoubleOrNull() ?: 60.0
+        runBg("一鍵尋找計時器") {
+            MemEngine.firstScan(t, m) { p -> post { if (busy) status("掃描 $p%") } }
+            if (MemEngine.count == 0) {
+                note = "範圍內沒有任何值，請確認秒數範圍與類型"
+                return@runBg
+            }
+            val n = MemEngine.autoShrink(6, 1200) { i, c -> post { status("自動縮小 $i/6：剩 $c 筆") } }
+            note = if (n in 1..60) MemEngine.probeTimer(delta) else "縮小後還有 $n 筆，請再按「自動縮小」"
         }
     }
 
