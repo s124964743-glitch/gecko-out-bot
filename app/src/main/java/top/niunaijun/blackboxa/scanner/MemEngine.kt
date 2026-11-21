@@ -105,6 +105,12 @@ object MemEngine {
     var readOnly = false
         private set
 
+    @Volatile
+    var statOk = 0
+
+    @Volatile
+    var statFail = 0
+
     val frozen = ConcurrentHashMap<Long, Pair<VType, Long>>()
 
     private val lock = Any()
@@ -123,6 +129,11 @@ object MemEngine {
         file = f
         return f
     }
+
+    /** 優先用原生直讀（不依賴 /proc/self/mem 權限），沒有原生庫才退回讀檔。 */
+    private fun rd(addr: Long, buf: ByteArray, off: Int, len: Int): Boolean =
+        if (NativeMem.OK) NativeMem.read(addr, buf, off, len)
+        else synchronized(lock) { readAt(mem(), addr, buf, off, len) }
 
     private fun readAt(f: RandomAccessFile, addr: Long, buf: ByteArray, off: Int, len: Int): Boolean {
         try {
@@ -197,6 +208,8 @@ object MemEngine {
     fun firstScan(t: VType, m: Matcher, onProgress: (Int) -> Unit): Int {
         type = t
         clear()
+        statOk = 0
+        statFail = 0
         val regs = regions()
         val total = regs.sumOf { it.end - it.start }.coerceAtLeast(1L)
         var done = 0L
@@ -207,14 +220,15 @@ object MemEngine {
             var a = r.start
             while (a < r.end) {
                 val n = minOf(CHUNK.toLong(), r.end - a).toInt()
-                val ok = synchronized(lock) { readAt(mem(), a, buf, 0, n) }
+                val ok = rd(a, buf, 0, n)
+                if (ok) statOk++ else statFail++
                 if (ok) {
                     if (!scanBuf(bb, 0, n, a, step, m)) break@loop
                 } else {
                     var o = 0
                     while (o < n) {
                         val l = minOf(4096, n - o)
-                        val ok2 = synchronized(lock) { readAt(mem(), a + o, buf, o, l) }
+                        val ok2 = rd(a + o, buf, o, l)
                         if (ok2 && !scanBuf(bb, o, o + l, a, step, m)) break@loop
                         o += l
                     }
@@ -242,10 +256,10 @@ object MemEngine {
                 val base = a and 4095L.inv()
                 pageBase = -1L
                 pageLen = 0
-                if (synchronized(lock) { readAt(mem(), base, page, 0, 8192) }) {
+                if (rd(base, page, 0, 8192)) {
                     pageBase = base
                     pageLen = 8192
-                } else if (synchronized(lock) { readAt(mem(), base, page, 0, 4096) }) {
+                } else if (rd(base, page, 0, 4096)) {
                     pageBase = base
                     pageLen = 4096
                 } else {
@@ -274,13 +288,18 @@ object MemEngine {
 
     fun peek(addr: Long, t: VType): Long? {
         val b = ByteArray(t.size)
-        val ok = synchronized(lock) { readAt(mem(), addr, b, 0, t.size) }
+        val ok = rd(addr, b, 0, t.size)
         if (!ok) return null
         val bb = ByteBuffer.wrap(b).order(LE)
         return if (t.size == 4) bb.getInt(0).toLong() else bb.getLong(0)
     }
 
     fun write(addr: Long, t: VType, bits: Long): Boolean = synchronized(lock) {
+        if (NativeMem.OK) {
+            val bb = ByteBuffer.allocate(t.size).order(LE)
+            if (t.size == 4) bb.putInt(bits.toInt()) else bb.putLong(bits)
+            return@synchronized NativeMem.write(addr, bb.array(), 0, t.size)
+        }
         try {
             val bb = ByteBuffer.allocate(t.size).order(LE)
             if (t.size == 4) bb.putInt(bits.toInt()) else bb.putLong(bits)
@@ -316,15 +335,31 @@ object MemEngine {
         }
     }
 
-    /** 引擎自檢：在測試目標中搜尋獨特數值、改寫，再確認真的被改到。 */
+    /** 引擎自檢：搜尋獨特數值、改寫、確認真的被改到，並回報診斷資訊。 */
     fun selfTest(): String {
         val tb = TestTarget.buf
         val magic = 1357924680
         val after = 1357924681
         tb.putInt(0, magic)
-        val regs = regions().size
+        val regs = regions()
+        val mb = regs.sumOf { it.end - it.start } shr 20
+        val sb = StringBuilder()
+        sb.append("讀取方式：").append(if (NativeMem.OK) "原生直讀" else "/proc/self/mem（原生庫未載入）").append('\n')
+        sb.append("可讀寫區段 ${regs.size} 個，共 ${mb}MB\n")
+        // 直接用測試緩衝區的實際位址驗證
+        try {
+            val f = java.nio.Buffer::class.java.getDeclaredField("address")
+            f.isAccessible = true
+            val addr = f.getLong(tb)
+            val inRegion = regs.any { addr >= it.start && addr < it.end }
+            val v = peek(addr, VType.I32)
+            sb.append("測試位址 0x${addr.toString(16)}，在區段內=$inRegion，直讀值=${v ?: "讀取失敗"}\n")
+        } catch (e: Throwable) {
+            sb.append("取不到測試位址（${e.javaClass.simpleName}）\n")
+        }
         val m = VType.I32.exact(magic.toString())!!
         val n = firstScan(VType.I32, m) { }
+        sb.append("掃描：成功 $statOk 塊、失敗 $statFail 塊，找到 $n 筆\n")
         var writes = 0
         for (i in 0 until count) {
             if (write(addrs[i], VType.I32, after.toLong())) writes++
@@ -332,9 +367,9 @@ object MemEngine {
         val ok = tb.getInt(0) == after
         tb.putInt(0, 100)
         clear()
-        return "掃描 $regs 個區段、找到 $n 筆、成功寫入 $writes 筆" +
-            (if (readOnly) "（唯讀模式）" else "") + "\n" +
-            if (ok) "✅ 測試目標已被改寫，引擎正常" else "❌ 測試目標沒有被改到"
+        sb.append("寫入成功 $writes 筆\n")
+        sb.append(if (ok) "✅ 測試目標已被改寫，引擎正常" else "❌ 測試目標沒有被改到")
+        return sb.toString()
     }
 }
 
