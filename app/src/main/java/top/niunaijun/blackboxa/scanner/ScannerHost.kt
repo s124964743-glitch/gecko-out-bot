@@ -4,12 +4,12 @@ import android.app.Activity
 import android.app.Application
 import android.os.Bundle
 import android.util.Log
-import android.view.ViewGroup
 
 /** 在「遊戲進程」啟動後註冊，讓每個遊戲 Activity 都掛上搜改視窗。 */
 object ScannerHost {
     private const val TAG = "ScannerHost"
     private var inited = false
+    private val windows = HashMap<Activity, ScannerWindow>()
 
     @Synchronized
     fun init(app: Application) {
@@ -17,11 +17,20 @@ object ScannerHost {
         inited = true
         app.registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
             override fun onActivityResumed(activity: Activity) {
-                try {
-                    attach(activity)
-                } catch (e: Throwable) {
-                    Log.e(TAG, "attach failed", e)
+                val decor = activity.window?.decorView ?: return
+                decor.post {
+                    try {
+                        if (!activity.isFinishing && !activity.isDestroyed) {
+                            windows.getOrPut(activity) { ScannerWindow(activity) }.show()
+                        }
+                    } catch (e: Throwable) {
+                        Log.e(TAG, "show failed", e)
+                    }
                 }
+            }
+
+            override fun onActivityDestroyed(activity: Activity) {
+                windows.remove(activity)?.dismiss()
             }
 
             override fun onActivityCreated(a: Activity, s: Bundle?) {}
@@ -29,14 +38,7 @@ object ScannerHost {
             override fun onActivityPaused(a: Activity) {}
             override fun onActivityStopped(a: Activity) {}
             override fun onActivitySaveInstanceState(a: Activity, s: Bundle) {}
-            override fun onActivityDestroyed(a: Activity) {}
         })
-        Log.d(TAG, "scanner host registered in ${Application.getProcessName()}")
-    }
-
-    private fun attach(activity: Activity) {
-        val decor = activity.window?.decorView as? ViewGroup ?: return
-        if (decor.findViewWithTag<android.view.View>(ScannerOverlay.TAG_ROOT) != null) return
-        ScannerOverlay(activity).attachTo(activity)
+        Log.d(TAG, "scanner host registered")
     }
 }
