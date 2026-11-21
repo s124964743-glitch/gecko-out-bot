@@ -51,8 +51,7 @@ class ScannerOverlay(activity: Activity) :
                         if (moved) {
                             translationX = nx
                             translationY = ny
-                            posX = nx
-                            posY = ny
+                            clamp()
                         }
                     }
                     MotionEvent.ACTION_UP -> if (!moved) onTap?.invoke()
@@ -60,6 +59,22 @@ class ScannerOverlay(activity: Activity) :
                 return true
             }
         })
+    }
+
+    /** 限制在父容器範圍內，避免拖出畫面後找不回來。 */
+    private fun clamp() {
+        val p = parent as? View ?: return
+        if (p.width == 0 || width == 0) return
+        val minX = -left.toFloat()
+        val maxX = maxOf(minX, (p.width - left - width).toFloat())
+        val minY = -top.toFloat()
+        val maxY = maxOf(minY, (p.height - top - height).toFloat())
+        val nx = translationX.coerceIn(minX, maxX)
+        val ny = translationY.coerceIn(minY, maxY)
+        if (nx != translationX) translationX = nx
+        if (ny != translationY) translationY = ny
+        posX = nx
+        posY = ny
     }
 
     private fun setExpanded(on: Boolean) {
@@ -124,6 +139,7 @@ class ScannerOverlay(activity: Activity) :
         }
         addView(box, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT))
         setExpanded(expanded)
+        addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> clamp() }
     }
 
     /** 掛到 Activity 的內容區上方。 */
