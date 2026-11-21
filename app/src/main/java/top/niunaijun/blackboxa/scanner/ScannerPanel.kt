@@ -55,23 +55,46 @@ class ScannerPanel(
         }
     }
 
+    /** 輸入框不叫出系統鍵盤（會搶走遊戲焦點、讓遊戲無法操作），改用面板內建的數字鍵。 */
     private fun edit(hint: String) = EditText(context).apply {
         this.hint = hint
         textSize = 13f
         setSingleLine()
-        inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL or
-            InputType.TYPE_NUMBER_FLAG_SIGNED
-        setOnTouchListener { v, _ ->
-            if (focusHook != null) {
-                focusHook.invoke(true)
-                v.postDelayed({
-                    v.requestFocus()
-                    (context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
-                        .showSoftInput(v, 0)
-                }, 150)
-            }
-            false
+        isFocusable = false
+        isFocusableInTouchMode = false
+        isCursorVisible = false
+        setOnClickListener { setActive(this) }
+    }
+
+    private var active: EditText? = null
+
+    private fun setActive(e: EditText) {
+        active = e
+        for (x in listOf(etV, etV2, etNew)) {
+            x.setBackgroundColor(if (x === e) 0x663949AB else 0x22FFFFFF)
         }
+    }
+
+    private fun press(c: String) {
+        val e = active ?: etV
+        e.setText(e.text.toString() + c)
+    }
+
+    private fun keypad(): View {
+        val c = LinearLayout(context)
+        c.orientation = VERTICAL
+        c.addView(row(*"1234567".map { ch -> btn(ch.toString()) { press(ch.toString()) } }.toTypedArray()))
+        c.addView(row(
+            btn("8") { press("8") }, btn("9") { press("9") }, btn("0") { press("0") },
+            btn(".") { press(".") }, btn("-") { press("-") },
+            btn("⌫") {
+                val e = active ?: etV
+                val t = e.text.toString()
+                if (t.isNotEmpty()) e.setText(t.dropLast(1))
+            },
+            btn("C") { (active ?: etV).setText("") }
+        ))
+        return c
     }
 
     private fun row(vararg views: View): LinearLayout {
@@ -100,6 +123,8 @@ class ScannerPanel(
 
         addView(row(btnType, btnMode))
         addView(row(etV, etV2))
+        addView(keypad())
+        setActive(etV)
         addView(row(btn("新搜尋") { newScan() }, btn("清除結果") { clearAll() }))
         addView(row(btn("再搜:=值") { refine(Op.MATCH, false) }, btn("再搜:範圍") { refine(Op.MATCH, true) }))
         addView(row(
