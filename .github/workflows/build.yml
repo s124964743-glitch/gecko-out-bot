@@ -16,14 +16,22 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: 8.9
+          java-version: 21
+          cache: gradle
+      - uses: android-actions/setup-android@v3
+      - name: Install SDK / NDK
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358"
       - name: Build signed release APK
-        run: gradle assembleRelease -PversionCode=${{ github.run_number }} --no-daemon
-      - name: Rename APK
-        run: cp app/build/outputs/apk/release/app-release.apk MemEdit.apk
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:assembleRelease -PversionCode=${{ github.run_number }} --no-daemon --stacktrace
+      - name: Pick universal APK
+        run: |
+          ls -R app/build/outputs/apk/release
+          APK=$(find app/build/outputs/apk/release -name "*universal*.apk" | head -n 1)
+          cp "$APK" MemEdit.apk
       - uses: actions/upload-artifact@v4
         with:
           name: MemEdit-apk
