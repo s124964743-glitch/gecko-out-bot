@@ -128,20 +128,30 @@ class ScannerWindow(private val activity: Activity) {
     }
 
     /** iPhone「輔助觸控」小白點樣式：深灰半透明圓角底 + 三層同心圓。 */
-    private fun assistiveDot(): LayerDrawable {
+    private fun assistiveDot(): android.graphics.drawable.Drawable {
         fun oval(color: Int) = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
             setColor(color)
         }
-        val base = GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            cornerRadius = dp(15).toFloat()
-            setColor(0x993A3A3C.toInt())
+        // 液態玻璃圓球：半透明底 + 斜向反光 + 亮邊 + 頂部高光 + 中心小白點
+        val tint = oval(0x66101218)
+        val sheen = GradientDrawable(
+            GradientDrawable.Orientation.TL_BR, intArrayOf(0x55FFFFFF, 0x0FFFFFFF, 0x33FFFFFF)
+        ).apply { shape = GradientDrawable.OVAL }
+        val edge = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(0x00000000)
+            setStroke(dp(1).coerceAtLeast(1), 0xA6FFFFFF.toInt())
         }
-        val ld = LayerDrawable(arrayOf(base, oval(0xB3FFFFFF.toInt()), oval(0xF03A3A3C.toInt()), oval(0xE6FFFFFF.toInt())))
-        ld.setLayerInset(1, dp(9), dp(9), dp(9), dp(9))
-        ld.setLayerInset(2, dp(14), dp(14), dp(14), dp(14))
-        ld.setLayerInset(3, dp(18), dp(18), dp(18), dp(18))
+        val gloss = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0x80FFFFFF.toInt(), 0x00FFFFFF)
+        ).apply { shape = GradientDrawable.OVAL }
+        val ring = oval(0x40FFFFFF)
+        val core = oval(0xE6FFFFFF.toInt())
+        val ld = LayerDrawable(arrayOf(tint, sheen, edge, gloss, ring, core))
+        ld.setLayerInset(3, dp(7), dp(3), dp(7), dp(26))
+        ld.setLayerInset(4, dp(12), dp(12), dp(12), dp(12))
+        ld.setLayerInset(5, dp(18), dp(18), dp(18), dp(18))
         return ld
     }
 
@@ -159,7 +169,6 @@ class ScannerWindow(private val activity: Activity) {
     init {
         bubble = View(ctx).apply {
             background = assistiveDot()
-            alpha = 0.9f
         }
         draggable(bubble, { setExpanded(true) }, snap = true)
         root.addView(bubble, FrameLayout.LayoutParams(dp(52), dp(52)))
@@ -218,8 +227,8 @@ class ScannerWindow(private val activity: Activity) {
     fun show() {
         if (shown) return
         if (!placed) {
-            posX = dp(8)
-            posY = dp(80)
+            posX = (dm().widthPixels - dp(52)) / 2
+            posY = dm().heightPixels - dp(52) - dp(12)
             placed = true
         }
         lp.x = posX
