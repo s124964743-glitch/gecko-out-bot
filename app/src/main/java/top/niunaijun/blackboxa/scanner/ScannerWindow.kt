@@ -3,6 +3,8 @@ package top.niunaijun.blackboxa.scanner
 import android.app.Activity
 import android.content.Context
 import android.graphics.PixelFormat
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.LayerDrawable
 import android.util.Log
 import android.view.ContextThemeWrapper
 import android.view.Gravity
@@ -34,7 +36,7 @@ class ScannerWindow(private val activity: Activity) {
     private val ctx = ContextThemeWrapper(activity, android.R.style.Theme_Material)
     private val wm: WindowManager = activity.windowManager
     private val root = FrameLayout(ctx)
-    private val bubble: Button
+    private val bubble: View
     private val box: LinearLayout
     private var shown = false
 
@@ -55,8 +57,8 @@ class ScannerWindow(private val activity: Activity) {
     private fun dp(v: Int) = (v * dm().density).toInt()
 
     private fun clamp() {
-        val w = if (root.width > 0) root.width else dp(44)
-        val h = if (root.height > 0) root.height else dp(44)
+        val w = if (root.width > 0) root.width else dp(52)
+        val h = if (root.height > 0) root.height else dp(52)
         lp.x = lp.x.coerceIn(0, maxOf(0, dm().widthPixels - w))
         lp.y = lp.y.coerceIn(0, maxOf(0, dm().heightPixels - h))
         posX = lp.x
@@ -84,7 +86,7 @@ class ScannerWindow(private val activity: Activity) {
         if (lp.flags != f) update()
     }
 
-    private fun draggable(handle: View, onTap: (() -> Unit)?) {
+    private fun draggable(handle: View, onTap: (() -> Unit)?, snap: Boolean = false) {
         handle.setOnTouchListener(object : View.OnTouchListener {
             var sx = 0
             var sy = 0
@@ -107,11 +109,37 @@ class ScannerWindow(private val activity: Activity) {
                             update()
                         }
                     }
-                    MotionEvent.ACTION_UP -> if (!moved) onTap?.invoke()
+                    MotionEvent.ACTION_UP -> if (!moved) {
+                        onTap?.invoke()
+                    } else if (snap) {
+                        // 像 iPhone 小白點：放開後吸附到左右邊緣
+                        val w = if (root.width > 0) root.width else dp(52)
+                        lp.x = if (lp.x + w / 2 < dm().widthPixels / 2) 0 else dm().widthPixels - w
+                        clamp()
+                        update()
+                    }
                 }
                 return true
             }
         })
+    }
+
+    /** iPhone「輔助觸控」小白點樣式：深灰半透明圓角底 + 三層同心圓。 */
+    private fun assistiveDot(): LayerDrawable {
+        fun oval(color: Int) = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(color)
+        }
+        val base = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(15).toFloat()
+            setColor(0x993A3A3C.toInt())
+        }
+        val ld = LayerDrawable(arrayOf(base, oval(0xB3FFFFFF.toInt()), oval(0xF03A3A3C.toInt()), oval(0xE6FFFFFF.toInt())))
+        ld.setLayerInset(1, dp(9), dp(9), dp(9), dp(9))
+        ld.setLayerInset(2, dp(14), dp(14), dp(14), dp(14))
+        ld.setLayerInset(3, dp(18), dp(18), dp(18), dp(18))
+        return ld
     }
 
     private fun setExpanded(on: Boolean) {
@@ -125,19 +153,12 @@ class ScannerWindow(private val activity: Activity) {
     }
 
     init {
-        bubble = Button(ctx).apply {
-            text = "改"
-            textSize = 14f
-            minWidth = 0
-            minimumWidth = 0
-            minHeight = 0
-            minimumHeight = 0
-            setPadding(dp(10), dp(6), dp(10), dp(6))
-            setBackgroundColor(0xCC3949AB.toInt())
-            setTextColor(0xFFFFFFFF.toInt())
+        bubble = View(ctx).apply {
+            background = assistiveDot()
+            alpha = 0.9f
         }
-        draggable(bubble) { setExpanded(true) }
-        root.addView(bubble, FrameLayout.LayoutParams(dp(44), dp(44)))
+        draggable(bubble, { setExpanded(true) }, snap = true)
+        root.addView(bubble, FrameLayout.LayoutParams(dp(52), dp(52)))
 
         val panel = ScannerPanel(ctx) { need -> setFocusable(need) }
         val scroll = ScrollView(ctx)
