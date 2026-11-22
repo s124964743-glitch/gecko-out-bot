@@ -44,6 +44,9 @@ class ScannerPanel(
         this.text = text
         textSize = 12f
         isAllCaps = false
+        background = Glass.button(context)
+        setTextColor(0xFFFFFFFF.toInt())
+        stateListAnimator = null
         minWidth = 0
         minimumWidth = 0
         minHeight = 0
@@ -63,6 +66,10 @@ class ScannerPanel(
         isFocusable = false
         isFocusableInTouchMode = false
         isCursorVisible = false
+        background = Glass.field(context, false)
+        setTextColor(0xFFFFFFFF.toInt())
+        setHintTextColor(0x99FFFFFF.toInt())
+        setPadding(dp(10), dp(6), dp(10), dp(6))
         setOnClickListener { setActive(this) }
     }
 
@@ -71,7 +78,7 @@ class ScannerPanel(
     private fun setActive(e: EditText) {
         active = e
         for (x in listOf(etV, etV2, etNew)) {
-            x.setBackgroundColor(if (x === e) 0x663949AB else 0x22FFFFFF)
+            x.background = Glass.field(context, x === e)
         }
     }
 
@@ -107,7 +114,7 @@ class ScannerPanel(
     init {
         orientation = VERTICAL
         setPadding(dp(8), dp(8), dp(8), dp(8))
-        setBackgroundColor(0xF0202124.toInt())
+        background = Glass.panel(context)
 
         btnType = btn(MemEngine.type.label) { cycleType() }
         btnMode = btn(modeNames[0]) { cycleMode() }

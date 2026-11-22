@@ -10,7 +10,9 @@ import android.view.ContextThemeWrapper
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewOutlineProvider
 import android.view.WindowManager
+import android.os.Build
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.FrameLayout
@@ -46,7 +48,8 @@ class ScannerWindow(private val activity: Activity) {
         WindowManager.LayoutParams.TYPE_APPLICATION_PANEL,
         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
             WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+            WindowManager.LayoutParams.FLAG_BLUR_BEHIND,
         PixelFormat.TRANSLUCENT
     ).apply {
         gravity = Gravity.TOP or Gravity.START
@@ -146,6 +149,7 @@ class ScannerWindow(private val activity: Activity) {
         expanded = on
         bubble.visibility = if (on) View.GONE else View.VISIBLE
         box.visibility = if (on) View.VISIBLE else View.GONE
+        if (Build.VERSION.SDK_INT >= 31) lp.blurBehindRadius = if (on) dp(30) else 0
         root.post {
             clamp()
             update()
@@ -161,6 +165,7 @@ class ScannerWindow(private val activity: Activity) {
         root.addView(bubble, FrameLayout.LayoutParams(dp(52), dp(52)))
 
         val panel = ScannerPanel(ctx) { need -> setFocusable(need) }
+        panel.background = null
         val scroll = ScrollView(ctx)
         scroll.addView(panel)
 
@@ -176,6 +181,9 @@ class ScannerWindow(private val activity: Activity) {
             minimumWidth = dp(44)
             minHeight = 0
             minimumHeight = dp(32)
+            background = Glass.button(ctx)
+            setTextColor(0xFFFFFFFF.toInt())
+            stateListAnimator = null
             setOnClickListener {
                 setFocusable(false)
                 setExpanded(false)
@@ -184,7 +192,7 @@ class ScannerWindow(private val activity: Activity) {
         val header = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setBackgroundColor(0xFF3949AB.toInt())
+            background = Glass.header(ctx)
             addView(title, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
             addView(bMin)
         }
@@ -194,6 +202,9 @@ class ScannerWindow(private val activity: Activity) {
         val h = (dm().heightPixels * 0.6).toInt()
         box = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
+            background = Glass.panel(ctx)
+            clipToOutline = true
+            outlineProvider = ViewOutlineProvider.BACKGROUND
             addView(header)
             addView(scroll, LinearLayout.LayoutParams(w, h))
         }
@@ -213,6 +224,7 @@ class ScannerWindow(private val activity: Activity) {
         }
         lp.x = posX
         lp.y = posY
+        if (Build.VERSION.SDK_INT >= 31) lp.blurBehindRadius = if (expanded) dp(30) else 0
         try {
             wm.addView(root, lp)
             shown = true
