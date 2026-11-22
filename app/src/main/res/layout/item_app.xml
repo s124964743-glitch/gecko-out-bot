@@ -3,9 +3,14 @@
         xmlns:app="http://schemas.android.com/apk/res-auto"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:layout_margin="7dp"
+        android:background="@drawable/bg_card"
         android:gravity="center"
         android:orientation="vertical"
-        android:paddingTop="16dp">
+        android:paddingStart="12dp"
+        android:paddingTop="22dp"
+        android:paddingEnd="12dp"
+        android:paddingBottom="20dp">
 
     <FrameLayout
             android:layout_width="wrap_content"
@@ -13,8 +18,12 @@
 
         <ImageView
                 android:id="@+id/icon"
-                android:layout_width="48dp"
-                android:layout_height="48dp" />
+                android:layout_width="76dp"
+                android:layout_height="76dp"
+                android:background="@drawable/bg_icon_ring"
+                android:clipToOutline="true"
+                android:outlineProvider="background"
+                android:padding="3dp" />
 
         <com.othershe.cornerlabelview.CornerLabelView
                 android:id="@+id/cornerLabel"
@@ -22,7 +31,7 @@
                 android:layout_height="24dp"
                 android:layout_gravity="top|start"
                 android:visibility="invisible"
-                app:bg_color="@color/primary"
+                app:bg_color="@color/ac_red"
                 app:position="left_top"
                 app:side_length="22dp"
                 app:text="XP"
@@ -32,11 +41,28 @@
 
     <TextView
             android:id="@+id/name"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:ellipsize="end"
+            android:gravity="center"
+            android:maxLines="1"
+            android:textColor="@color/ac_text"
+            android:textSize="17sp"
+            android:textStyle="bold" />
+
+    <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="2dp"
-            android:textColor="@color/primary_text"
-            android:textSize="12sp" />
-
+            android:layout_marginTop="16dp"
+            android:background="@drawable/bg_pill"
+            android:paddingStart="26dp"
+            android:paddingTop="7dp"
+            android:paddingEnd="26dp"
+            android:paddingBottom="7dp"
+            android:text="@string/launch_game"
+            android:textColor="@color/ac_red"
+            android:textSize="14sp"
+            android:textStyle="bold" />
 
 </LinearLayout>

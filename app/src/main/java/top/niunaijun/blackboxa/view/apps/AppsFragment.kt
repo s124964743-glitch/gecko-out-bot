@@ -81,7 +81,7 @@ class AppsFragment : Fragment() {
             viewBinding.recyclerView.adapter = mAdapter
             
             
-            val layoutManager = GridLayoutManager(requireContext(), 4)
+            val layoutManager = GridLayoutManager(requireContext(), 2)
             layoutManager.isItemPrefetchEnabled = true
             layoutManager.initialPrefetchItemCount = 8
             viewBinding.recyclerView.layoutManager = layoutManager

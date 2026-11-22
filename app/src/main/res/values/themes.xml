@@ -18,6 +18,21 @@
         <item name="android:forceDarkAllowed" tools:targetApi="q">false</item>
     </style>
 
+    <style name="Theme.BlackBox.Armoury" parent="Theme.MaterialComponents.NoActionBar">
+        <item name="colorPrimary">@color/ac_red</item>
+        <item name="colorPrimaryVariant">@color/ac_bg</item>
+        <item name="colorOnPrimary">@color/white</item>
+        <item name="colorSecondary">@color/ac_red</item>
+        <item name="colorOnSecondary">@color/white</item>
+        <item name="colorSurface">@color/ac_card</item>
+        <item name="colorOnSurface">@color/ac_text</item>
+        <item name="android:windowBackground">@color/ac_bg</item>
+        <item name="android:colorBackground">@color/ac_bg</item>
+        <item name="android:statusBarColor" tools:targetApi="l">@color/ac_bg</item>
+        <item name="android:navigationBarColor" tools:targetApi="l">@color/ac_bg</item>
+        <item name="android:forceDarkAllowed" tools:targetApi="q">false</item>
+    </style>
+
     <style name="ToolBarColorStyle" parent="ThemeOverlay.AppCompat.ActionBar">
         <item name="actionMenuTextColor">@color/white</item>
         <item name="colorControlNormal">@color/white</item>

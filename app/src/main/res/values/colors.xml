@@ -7,4 +7,13 @@
     <color name="primary_text">#212121</color>
     <color name="secondary_text">#757575</color>
     <color name="white">#FFFFFFFF</color>
+    <!-- Armoury Crate 風格 -->
+    <color name="ac_bg">#FF0B0D12</color>
+    <color name="ac_card">#FF14171F</color>
+    <color name="ac_stroke">#FF262B38</color>
+    <color name="ac_red">#FFE4163A</color>
+    <color name="ac_text">#FFF2F4F8</color>
+    <color name="ac_sub">#FF8A90A0</color>
+    <color name="ac_ring">#FF9AA3B5</color>
+    <color name="ac_fab">#FF2A2D36</color>
 </resources>

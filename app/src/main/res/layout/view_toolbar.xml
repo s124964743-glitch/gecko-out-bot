@@ -5,10 +5,13 @@
         android:id="@+id/toolbar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:minHeight="64dp"
         android:theme="@style/ToolBarColorStyle"
-        android:background="@color/primary"
+        android:background="@drawable/bg_toolbar"
         app:title="@string/app_name"
-        app:subtitleTextColor="@color/white"
-        app:titleTextColor="@color/white">
+        app:titleCentered="true"
+        app:subtitleCentered="true"
+        app:subtitleTextColor="@color/ac_sub"
+        app:titleTextColor="@color/ac_text">
 
 </com.google.android.material.appbar.MaterialToolbar>
